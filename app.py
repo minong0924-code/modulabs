@@ -91,7 +91,7 @@ rejection_df = get_document_rejection_stats(df)
 st.sidebar.success(f"✅ {selected_course['name']} {selected_cohort}기 데이터 로드 완료!")
 
 # 탭 생성
-tab1, tab2, tab3 = st.tabs(["📈 종합 현황", "📊 상세 분석", "⚙️ 설정"])
+tab1, tab2 = st.tabs(["📈 종합 현황", "📊 상세 분석"])
 
 with tab1:
     # KPI 카드 (1행)
@@ -205,61 +205,3 @@ with tab2:
             st.dataframe(dropout_df, use_container_width=True, hide_index=True)
         else:
             st.info("수강포기 데이터가 없습니다.")
-
-with tab3:
-    st.subheader("대시보드 정보")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.info(f"""
-        **현재 과정**: {selected_course['name']} {selected_cohort}기
-
-        **과정 유형**: {'실업자' if selected_course['type'] == 'unemployed' else '재직자'}
-
-        **시트명**: {sheet_info['sheet_name']}
-
-        **마지막 업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        """)
-
-    with col2:
-        st.warning("""
-        **참고사항:**
-        - 데이터는 Google Sheets에서 실시간으로 조회됩니다
-        - 스프레드시트 수정 후 페이지를 새로고침하면 최신 데이터가 반영됩니다
-        - 권한 문제가 발생하면 GCP 서비스 계정 권한을 확인해주세요
-        """)
-
-    # 디버그 정보
-    st.subheader("디버그: 스프레드시트 컬럼명")
-    st.write("**사용 가능한 컬럼:**")
-    st.write(df.columns.tolist())
-
-    st.write("**퍼널 설정 (config.py):**")
-    st.write(f"FUNNEL_COLS: {FUNNEL_COLS}")
-    st.write(f"FUNNEL_LABELS: {FUNNEL_LABELS}")
-
-    st.write("**집계된 퍼널 데이터:**")
-    st.json(funnel_counts)
-
-    st.write("**각 퍼널 컬럼의 실제 데이터 샘플:**")
-    for col in FUNNEL_COLS:
-        if col in df.columns:
-            unique_vals = df[col].unique()[:10]
-            st.write(f"'{col}': {list(unique_vals)}")
-            # 각 컬럼별 'O' 개수 확인
-            o_count = (df[col].astype(str).str.strip().str.upper() == 'O').sum()
-            st.write(f"  → 'O' 개수: {o_count}")
-        else:
-            st.write(f"'{col}': 컬럼 없음")
-
-    st.write(f"**DataFrame 행 개수: {len(df)}**")
-    st.write(f"**DataFrame shape: {df.shape}**")
-    st.write(f"**첫 5개 행의 퍼널 컬럼 데이터:**")
-    if FUNNEL_COLS:
-        cols_to_show = [col for col in FUNNEL_COLS if col in df.columns]
-        st.dataframe(df[cols_to_show].head(), use_container_width=True)
-
-    # 데이터 미리보기
-    st.subheader("원본 데이터 미리보기")
-    st.dataframe(df.head(10), use_container_width=True)
