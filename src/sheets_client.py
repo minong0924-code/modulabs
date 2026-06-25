@@ -3,11 +3,27 @@
 import gspread
 from google.oauth2.service_account import Credentials
 import streamlit as st
+import os
+import json
 
 def get_sheets_client():
-    """Streamlit Secrets에서 Google Sheets 클라이언트 생성"""
+    """Google Sheets 클라이언트 생성 (Secrets 또는 환경변수 사용)"""
     try:
-        service_account_info = st.secrets["gcp_service_account"]
+        # 먼저 Streamlit Secrets 시도
+        if "gcp_service_account" in st.secrets:
+            service_account_info = st.secrets["gcp_service_account"]
+        # GOOGLE_APPLICATION_CREDENTIALS 환경변수 시도
+        elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            with open(creds_path) as f:
+                service_account_info = json.load(f)
+        # GCP_SERVICE_ACCOUNT_JSON 환경변수 시도 (JSON 문자열)
+        elif os.getenv("GCP_SERVICE_ACCOUNT_JSON"):
+            service_account_info = json.loads(os.getenv("GCP_SERVICE_ACCOUNT_JSON"))
+        else:
+            st.error("Google Sheets 크레덴셜을 찾을 수 없습니다. Secrets 또는 환경변수를 확인해주세요.")
+            return None
+
         credentials = Credentials.from_service_account_info(
             service_account_info,
             scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
