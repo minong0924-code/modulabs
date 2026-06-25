@@ -1,0 +1,322 @@
+"""시트 데이터 파싱 및 퍼널 집계"""
+
+import pandas as pd
+from datetime import datetime
+from .sheets_client import get_sheet_data
+from .config import FUNNEL_COLS, FUNNEL_LABELS, REQUIRED_COLUMNS
+
+def load_applicants(sheet_id: str, sheet_name: str, header_row: int = 4) -> pd.DataFrame:
+    """시트에서 지원자 행 데이터를 DataFrame으로 반환"""
+    if not sheet_id or not sheet_id.strip():
+        return pd.DataFrame()
+
+    data = get_sheet_data(sheet_id, sheet_name, header_row=header_row)
+
+    if data is None or len(data) == 0:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data)
+
+    # 모든 컬럼명의 앞뒤 공백 제거
+    df.columns = df.columns.str.strip()
+
+    # 필요한 컬럼만 선택 (존재하는 컬럼만)
+    cols_to_keep = [col for col in REQUIRED_COLUMNS if col in df.columns]
+    df = df[cols_to_keep]
+
+    # 일자 컬럼 처리
+    if "일자" in df.columns:
+        df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
+
+    return df
+
+def get_funnel_counts(df: pd.DataFrame) -> dict:
+    """퍼널 단계별 인원 수 집계"""
+    if df.empty:
+        return {col: 0 for col in FUNNEL_LABELS}
+
+    # 지원자는 신청자 이름이 있는 행만 카운트
+    applicant_count = 0
+    if "신청자 이름" in df.columns:
+        applicant_count = df["신청자 이름"].astype(str).str.strip().ne("").sum()
+    else:
+        applicant_count = len(df)
+
+    funnel_counts = {"지원자": int(applicant_count)}
+
+    for col, label in zip(FUNNEL_COLS, FUNNEL_LABELS[1:]):
+        if col in df.columns:
+            # 'O' 값만 카운트 (대소문자 구분 없음, 공백 제거)
+            count = (df[col].astype(str).str.strip().str.upper() == 'O').sum()
+            funnel_counts[label] = int(count)
+        else:
+            # 컬럼이 없으면 로그 출력 (디버깅용)
+            funnel_counts[label] = 0
+
+    return funnel_counts
+
+def get_channel_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """유입채널별 지원자 수 및 입학 전환율"""
+    if df.empty:
+        return pd.DataFrame()
+
+    channel_col = "유입 채널"
+    final_admission_col = "최종 입학"
+
+    if channel_col not in df.columns:
+        return pd.DataFrame()
+
+    channel_data = []
+
+    for channel in df[channel_col].unique():
+        if pd.isna(channel) or channel == "":
+            continue
+
+        channel_df = df[df[channel_col] == channel]
+        applicant_count = len(channel_df)
+
+        admission_count = 0
+        if final_admission_col in df.columns:
+            admission_count = (channel_df[final_admission_col] == 'O').sum()
+
+        conversion_rate = (admission_count / applicant_count * 100) if applicant_count > 0 else 0
+
+        channel_data.append({
+            "유입채널": channel,
+            "지원자수": applicant_count,
+            "최종합격수": int(admission_count),
+            "전환율(%)": round(conversion_rate, 1)
+        })
+
+    return pd.DataFrame(channel_data).sort_values("지원자수", ascending=False)
+
+def get_channel_detailed_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """유입채널별 상세 퍼널 통계 (지원자, 서류, 인터뷰, 입학, 결제)"""
+    if df.empty:
+        return pd.DataFrame()
+
+    channel_col = "유입 채널"
+    if channel_col not in df.columns:
+        return pd.DataFrame()
+
+    channel_data = []
+
+    for channel in df[channel_col].unique():
+        if pd.isna(channel) or channel == "":
+            continue
+
+        channel_df = df[df[channel_col] == channel]
+        applicant_count = len(channel_df)
+
+        # 각 단계별 'O' 개수 세기 (정확한 컬럼명 사용)
+        paper_count = (channel_df["서류 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "서류 합격" in channel_df.columns else 0
+        interview_count = (channel_df["인터뷰 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "인터뷰 합격" in channel_df.columns else 0
+        admission_count = (channel_df["최종 입학"].astype(str).str.strip().str.upper() == 'O').sum() if "최종 입학" in channel_df.columns else 0
+        payment_count = (channel_df["수강료 결제"].astype(str).str.strip().str.upper() == 'O').sum() if "수강료 결제" in channel_df.columns else 0
+
+        channel_data.append({
+            "채널": channel,
+            "지원자": applicant_count,
+            "서류합격": int(paper_count),
+            "인터뷰합격": int(interview_count),
+            "최종입학": int(admission_count),
+            "자기부담금 결제": int(payment_count)
+        })
+
+    return pd.DataFrame(channel_data).sort_values("지원자", ascending=False)
+
+def get_daily_trend(df: pd.DataFrame) -> pd.DataFrame:
+    """날짜별 지원자 현황 (1주차부터 최근까지)"""
+    if df.empty or "일자" not in df.columns:
+        return pd.DataFrame()
+
+    df_copy = df.copy()
+
+    # 그룹 미팅일 기준이 있으면 1주차의 일자를 시작점으로 사용
+    start_date = None
+    if "그룹 미팅일 기준" in df_copy.columns:
+        week1_rows = df_copy[df_copy["그룹 미팅일 기준"].astype(str).str.strip() == "1주차"]
+        if not week1_rows.empty and "일자" in week1_rows.columns:
+            week1_dates = pd.to_datetime(week1_rows["일자"], errors="coerce").dropna()
+            if len(week1_dates) > 0:
+                start_date = week1_dates.min()
+
+    # 일자 컬럼을 datetime으로 변환
+    df_copy["일자"] = pd.to_datetime(df_copy["일자"], errors="coerce")
+
+    # 날짜가 없는 행 제거
+    df_copy = df_copy.dropna(subset=["일자"])
+
+    if df_copy.empty:
+        return pd.DataFrame()
+
+    # 시간 정보 제거 - 날짜만 추출
+    df_copy["일자_정규화"] = df_copy["일자"].dt.normalize()
+
+    # 고유한 날짜들 추출
+    unique_dates = sorted(df_copy["일자_정규화"].unique())
+
+    if len(unique_dates) == 0:
+        return pd.DataFrame()
+
+    # start_date가 없으면 최소 날짜 사용
+    if start_date is None:
+        min_date = pd.Timestamp(unique_dates[0])
+    else:
+        min_date = pd.Timestamp(start_date)
+
+    max_date = pd.Timestamp(unique_dates[-1])
+
+    # 1주차 시작일부터 최근 일자까지의 모든 날짜 범위 생성
+    date_range = pd.date_range(start=min_date, end=max_date, freq='D')
+
+    # 각 날짜별로 COUNTIF 방식으로 카운팅
+    daily_counts = []
+    for date in date_range:
+        # 해당 날짜의 지원자 수 카운팅
+        count = (df_copy["일자_정규화"] == date).sum()
+        daily_counts.append({"일자": date, "일일지원자": int(count)})
+
+    daily_df = pd.DataFrame(daily_counts)
+    daily_df["누적지원자"] = daily_df["일일지원자"].cumsum()
+
+    return daily_df
+
+def get_dropout_reasons(df: pd.DataFrame) -> pd.DataFrame:
+    """수강포기 사유별 집계 (수강포기 칼럼에 '수강포기'라고 명시된 경우)"""
+    if df.empty:
+        return pd.DataFrame()
+
+    dropout_col = "수강포기"
+    reason_col = "사유"
+
+    if dropout_col not in df.columns:
+        return pd.DataFrame()
+
+    # 수강포기 칼럼에 '수강포기'라고 명시된 행만 필터링
+    dropout_df = df[df[dropout_col].astype(str).str.strip() == "수강포기"].copy()
+
+    if len(dropout_df) == 0:
+        return pd.DataFrame()
+
+    # 사유 컬럼에서 포기 사유 추출
+    if reason_col in dropout_df.columns:
+        # 빈 값 제거
+        reason_df = dropout_df[dropout_df[reason_col].astype(str).str.strip() != ""].copy()
+        if len(reason_df) > 0:
+            reason_counts = reason_df[reason_col].value_counts().reset_index()
+            reason_counts.columns = ["사유", "인원"]
+            return reason_counts.sort_values("인원", ascending=False)
+        else:
+            return pd.DataFrame({"사유": ["기타"], "인원": [len(dropout_df)]})
+    else:
+        # 사유 컬럼이 없으면 전체 수강포기자 수만 표시
+        return pd.DataFrame({"사유": ["기타"], "인원": [len(dropout_df)]})
+
+def get_dropout_count(df: pd.DataFrame) -> int:
+    """수강포기자 수"""
+    if df.empty or "수강포기" not in df.columns:
+        return 0
+    return (df["수강포기"] != '').sum()
+
+def get_document_rejection_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """서류 불합격자 사유별 집계 (서류 합격이 'X'인 경우)"""
+    if df.empty or "서류 합격" not in df.columns:
+        return pd.DataFrame()
+
+    # 서류 합격이 'X'인 행만 필터링
+    rejection_df = df[df["서류 합격"].astype(str).str.strip().str.upper() == 'X'].copy()
+
+    if len(rejection_df) == 0:
+        return pd.DataFrame()
+
+    # 사유 컬럼에서 불합격 사유 추출
+    if "사유" in rejection_df.columns:
+        # 빈 값 제거
+        reason_df = rejection_df[rejection_df["사유"].astype(str).str.strip() != ""].copy()
+        if len(reason_df) > 0:
+            reason_counts = reason_df["사유"].value_counts().reset_index()
+            reason_counts.columns = ["사유", "인원"]
+            return reason_counts.sort_values("인원", ascending=False)
+        else:
+            return pd.DataFrame({"사유": ["기타"], "인원": [len(rejection_df)]})
+    else:
+        # 사유 컬럼이 없으면 전체 불합격자 수만 표시
+        return pd.DataFrame({"사유": ["기타"], "인원": [len(rejection_df)]})
+
+def get_document_rejection_count(df: pd.DataFrame) -> int:
+    """서류 불합격자 수"""
+    if df.empty or "서류 합격" not in df.columns:
+        return 0
+    return (df["서류 합격"].astype(str).str.strip().str.upper() == 'X').sum()
+
+def get_applicants_list(df: pd.DataFrame) -> pd.DataFrame:
+    """지원자별 현황 목록 (이름, 채널, 퍼널 단계, 상태)"""
+    if df.empty:
+        return pd.DataFrame()
+
+    applicants_df = df.copy()
+
+    # 이름이 없는 행 제외
+    if "신청자 이름" in applicants_df.columns:
+        applicants_df = applicants_df[applicants_df["신청자 이름"].astype(str).str.strip() != ""].copy()
+
+    if applicants_df.empty:
+        return pd.DataFrame()
+
+    # 상태 컬럼 추가 (퍼널 진행 상황)
+    status_list = []
+    for idx, row in applicants_df.iterrows():
+        if "수강료 결제" in applicants_df.columns and str(row.get("수강료 결제", "")).strip().upper() == "O":
+            status = "수강료 결제 완료"
+        elif "최종 입학" in applicants_df.columns and str(row.get("최종 입학", "")).strip().upper() == "O":
+            status = "최종 입학"
+        elif "인터뷰 합격" in applicants_df.columns and str(row.get("인터뷰 합격", "")).strip().upper() == "O":
+            status = "인터뷰 합격"
+        elif "서류 합격" in applicants_df.columns and str(row.get("서류 합격", "")).strip().upper() == "X":
+            status = "서류 불합격"
+        elif "서류 합격" in applicants_df.columns and str(row.get("서류 합격", "")).strip().upper() == "O":
+            status = "서류 합격"
+        elif "수강포기" in applicants_df.columns and str(row.get("수강포기", "")).strip() == "수강포기":
+            status = "수강포기"
+        else:
+            status = "지원 중"
+
+        status_list.append(status)
+
+    applicants_df["상태"] = status_list
+
+    # 표시할 컬럼 정렬 (존재하는 컬럼만)
+    display_cols = ["신청자 이름"]
+    if "일자" in applicants_df.columns:
+        display_cols.append("일자")
+    if "유입 채널" in applicants_df.columns:
+        display_cols.append("유입 채널")
+    display_cols.append("상태")
+    if "사유" in applicants_df.columns:
+        display_cols.append("사유")
+
+    result_df = applicants_df[display_cols].reset_index(drop=True)
+
+    # 일자 컬럼 정규화 (datetime으로 변환)
+    if "일자" in result_df.columns:
+        result_df["일자"] = pd.to_datetime(result_df["일자"], errors="coerce")
+
+    return result_df
+
+def get_summary_stats(df: pd.DataFrame) -> dict:
+    """종합 통계"""
+    funnel = get_funnel_counts(df)
+    dropout = get_dropout_count(df)
+    rejection = get_document_rejection_count(df)
+
+    return {
+        "지원자": funnel.get("지원자", 0),
+        "지원서검토완료": funnel.get("지원서검토완료", 0),
+        "서류합격": funnel.get("서류합격", 0),
+        "서류불합격": rejection,
+        "인터뷰합격": funnel.get("인터뷰합격", 0),
+        "최종입학": funnel.get("최종입학", 0),
+        "수강료결제": funnel.get("수강료결제", 0),
+        "수강포기": dropout,
+    }
