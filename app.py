@@ -174,8 +174,13 @@ with tab2:
             st.info("데이터가 없습니다.")
 
     if not channel_detailed_df.empty:
-        # 채널을 인덱스로 설정하고 숫자 컬럼만 표시
-        display_df = channel_detailed_df[["채널", "지원자", "서류합격", "인터뷰합격", "최종입학", "자기부담금 결제"]].set_index("채널")
+        # 채널을 인덱스로 설정하고 모든 컬럼 표시 (합격률 포함)
+        display_df = channel_detailed_df[[
+            "채널", "지원자", "서류합격", "서류합격율(%)",
+            "인터뷰합격", "인터뷰합격율(%)",
+            "최종입학", "최종입학율(%)",
+            "자기부담금 결제", "결제율(%)"
+        ]].set_index("채널")
         st.dataframe(display_df, use_container_width=True)
     else:
         st.info("채널별 상세 데이터가 없습니다.")

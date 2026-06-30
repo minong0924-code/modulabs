@@ -95,7 +95,7 @@ def get_channel_counts(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(channel_data).sort_values("지원자수", ascending=False)
 
 def get_channel_detailed_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """유입채널별 상세 퍼널 통계 (지원자, 서류, 인터뷰, 입학, 결제)"""
+    """유입채널별 상세 퍼널 통계 (지원자, 서류, 인터뷰, 입학, 결제 + 각 단계별 합격률)"""
     if df.empty:
         return pd.DataFrame()
 
@@ -118,13 +118,23 @@ def get_channel_detailed_stats(df: pd.DataFrame) -> pd.DataFrame:
         admission_count = (channel_df["최종 입학"].astype(str).str.strip().str.upper() == 'O').sum() if "최종 입학" in channel_df.columns else 0
         payment_count = (channel_df["수강료 결제"].astype(str).str.strip().str.upper() == 'O').sum() if "수강료 결제" in channel_df.columns else 0
 
+        # 각 단계별 합격률 계산
+        paper_rate = (paper_count / max(applicant_count, 1)) * 100
+        interview_rate = (interview_count / max(paper_count, 1)) * 100
+        admission_rate = (admission_count / max(interview_count, 1)) * 100
+        payment_rate = (payment_count / max(admission_count, 1)) * 100
+
         channel_data.append({
             "채널": channel,
             "지원자": applicant_count,
             "서류합격": int(paper_count),
+            "서류합격율(%)": round(paper_rate, 1),
             "인터뷰합격": int(interview_count),
+            "인터뷰합격율(%)": round(interview_rate, 1),
             "최종입학": int(admission_count),
-            "자기부담금 결제": int(payment_count)
+            "최종입학율(%)": round(admission_rate, 1),
+            "자기부담금 결제": int(payment_count),
+            "결제율(%)": round(payment_rate, 1)
         })
 
     return pd.DataFrame(channel_data).sort_values("지원자", ascending=False)
