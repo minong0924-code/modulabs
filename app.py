@@ -222,6 +222,13 @@ with tab3:
         weekly_funnel_sorted["정렬순서"] = weekly_funnel_sorted["주차"].map(lambda x: week_order.get(x, 999))
         weekly_funnel_sorted = weekly_funnel_sorted.sort_values("정렬순서").drop("정렬순서", axis=1).reset_index(drop=True)
 
+        # 주차 컬럼을 문자열로 변환하여 정렬 순서 유지
+        weekly_funnel_sorted["주차"] = pd.Categorical(
+            weekly_funnel_sorted["주차"],
+            categories=sorted(weekly_funnel_sorted["주차"].unique(), key=lambda x: week_order.get(x, 999)),
+            ordered=True
+        )
+
         st.dataframe(weekly_funnel_sorted, use_container_width=True, hide_index=True)
 
         st.markdown("---")
