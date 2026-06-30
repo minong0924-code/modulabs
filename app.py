@@ -241,7 +241,16 @@ with tab3:
             sorted_cols.append("총계")
 
             rejection_sorted = weekly_rejection_df[sorted_cols]
-            st.dataframe(rejection_sorted, use_container_width=True)
+
+            # 주차별 총계 행 추가
+            week_totals = rejection_sorted[sorted_cols[:-1]].sum()  # 총계 컬럼 제외
+            week_totals['총계'] = week_totals.sum()
+            week_totals.name = '주차별 합계'
+
+            # 총계 행 추가
+            rejection_with_total = pd.concat([rejection_sorted, pd.DataFrame(week_totals).T])
+
+            st.dataframe(rejection_with_total, use_container_width=True)
         else:
             st.info("서류 불합격 데이터가 없습니다.")
     else:
