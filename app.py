@@ -228,7 +228,20 @@ with tab3:
 
         st.subheader("📋 주차별 서류 불합격 사유")
         if not weekly_rejection_df.empty:
-            st.dataframe(weekly_rejection_df, use_container_width=True)
+            # 주차 순서와 동일하게 정렬 (사전신청자, 1주차, 2주차, ...)
+            week_order = {"사전신청자": 0}
+            for i in range(1, 50):
+                week_order[f"{i}주차"] = i
+
+            # 컬럼 순서 정렬
+            sorted_cols = sorted(
+                [col for col in weekly_rejection_df.columns if col != "총계"],
+                key=lambda x: week_order.get(x, 999)
+            )
+            sorted_cols.append("총계")
+
+            rejection_sorted = weekly_rejection_df[sorted_cols]
+            st.dataframe(rejection_sorted, use_container_width=True)
         else:
             st.info("서류 불합격 데이터가 없습니다.")
     else:
