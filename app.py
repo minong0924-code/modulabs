@@ -269,6 +269,8 @@ with tab3:
             # 주차별로 데이터 분할하여 표시
             for week in sorted(weekly_channel_df["주차"].unique(), key=lambda x: week_order.get(x, 999)):
                 week_data = weekly_channel_df[weekly_channel_df["주차"] == week].drop("주차", axis=1).reset_index(drop=True)
+                # 지원자 수 기준 내림차순 정렬
+                week_data = week_data.sort_values("지원자", ascending=False).reset_index(drop=True)
 
                 st.write(f"**{week}**")
                 st.dataframe(week_data, use_container_width=True, hide_index=True)
