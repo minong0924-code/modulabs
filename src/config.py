@@ -43,7 +43,7 @@ COURSES = {
         "type": "unemployed",
         "cohorts": {
             1: {
-                "sheet_id": "",
+                "sheet_id": "1Uz0du-rwMXVi-XPNXmo2EbCkE5XZgbX94dLbYCT-P5w",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
             }
