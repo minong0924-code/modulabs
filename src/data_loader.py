@@ -385,7 +385,7 @@ def get_weekly_funnel_stats(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_weekly_channel_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """주차별 유입경로 통계 (지원자, 서류합격, 서류합격률)"""
+    """주차별 유입경로 통계 (지원자, 서류합격, 서류합격률, 서류불합격, 서류불합격률)"""
     if df.empty or "그룹 미팅일 기준" not in df.columns or "유입 채널" not in df.columns:
         return pd.DataFrame()
 
@@ -419,12 +419,20 @@ def get_weekly_channel_stats(df: pd.DataFrame) -> pd.DataFrame:
             # 서류합격률
             paper_rate = (paper_count / max(applicant_count, 1)) * 100
 
+            # 서류불합격 수 (X인 경우)
+            rejection_count = (channel_df["서류 합격"].astype(str).str.strip().str.upper() == 'X').sum() if "서류 합격" in channel_df.columns else 0
+
+            # 서류불합격률
+            rejection_rate = (rejection_count / max(applicant_count, 1)) * 100
+
             channel_data.append({
                 "주차": week,
                 "채널": channel,
                 "지원자": int(applicant_count),
                 "서류합격": int(paper_count),
-                "서류합격율(%)": round(paper_rate, 1)
+                "서류합격율(%)": round(paper_rate, 1),
+                "서류불합격": int(rejection_count),
+                "서류불합격율(%)": round(rejection_rate, 1)
             })
 
     if not channel_data:
