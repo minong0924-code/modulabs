@@ -384,6 +384,57 @@ def get_weekly_funnel_stats(df: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame()
 
+def get_weekly_channel_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """주차별 유입경로 통계 (지원자, 서류합격, 서류합격률)"""
+    if df.empty or "그룹 미팅일 기준" not in df.columns or "유입 채널" not in df.columns:
+        return pd.DataFrame()
+
+    # 주차 순서
+    week_order = {"사전신청": 0, "사전신청자": 0}
+    for i in range(1, 50):
+        week_order[f"{i}주차"] = i
+
+    channel_data = []
+
+    # 각 주차별로 유입경로 통계 생성
+    for week in sorted(df["그룹 미팅일 기준"].unique(), key=lambda x: week_order.get(x, 999)):
+        if pd.isna(week) or week == "" or week.strip() == "":
+            continue
+
+        week_df = df[df["그룹 미팅일 기준"] == week]
+
+        # 각 채널별 통계
+        for channel in week_df["유입 채널"].unique():
+            if pd.isna(channel) or channel == "" or channel.strip() == "":
+                continue
+
+            channel_df = week_df[week_df["유입 채널"] == channel]
+
+            # 지원자 수
+            applicant_count = len(channel_df)
+
+            # 서류합격 수
+            paper_count = (channel_df["서류 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "서류 합격" in channel_df.columns else 0
+
+            # 서류합격률
+            paper_rate = (paper_count / max(applicant_count, 1)) * 100
+
+            channel_data.append({
+                "주차": week,
+                "채널": channel,
+                "지원자": int(applicant_count),
+                "서류합격": int(paper_count),
+                "서류합격율(%)": round(paper_rate, 1)
+            })
+
+    if not channel_data:
+        return pd.DataFrame()
+
+    channel_df = pd.DataFrame(channel_data)
+
+    # 주차별로 그룹화하여 반환
+    return channel_df
+
 def get_weekly_rejection_stats(df: pd.DataFrame) -> dict:
     """주차별 서류 불합격 사유 (행: 사유, 열: 주차)"""
     if df.empty or "그룹 미팅일 기준" not in df.columns:
