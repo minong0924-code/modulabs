@@ -451,5 +451,11 @@ def get_weekly_rejection_stats(df: pd.DataFrame) -> dict:
     sorted_weeks = sorted(pivot_df.columns, key=lambda x: week_order.get(x, 999))
     pivot_df = pivot_df[sorted_weeks]
 
+    # 총계 컬럼 추가
+    pivot_df["총계"] = pivot_df.sum(axis=1)
+
+    # 총계 기준으로 내림차순 정렬
+    pivot_df = pivot_df.sort_values("총계", ascending=False)
+
     return pivot_df
 
