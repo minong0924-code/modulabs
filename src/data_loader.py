@@ -371,8 +371,8 @@ def get_weekly_funnel_stats(df: pd.DataFrame) -> pd.DataFrame:
             "결제율(%)": round(payment_rate, 1)
         })
 
-    # 주차 순서대로 정렬 (사전신청자, 1주차, 2주차, ...)
-    week_order = {"사전신청자": 0}
+    # 주차 순서대로 정렬 (사전신청, 사전신청자, 1주차, 2주차, ...)
+    week_order = {"사전신청": 0, "사전신청자": 0}
     for i in range(1, 50):
         week_order[f"{i}주차"] = i
 
@@ -390,7 +390,7 @@ def get_weekly_rejection_stats(df: pd.DataFrame) -> dict:
         return pd.DataFrame()
 
     # 주차별 정렬 순서
-    week_order = {"사전신청자": 0}
+    week_order = {"사전신청": 0, "사전신청자": 0}
     for i in range(1, 50):
         week_order[f"{i}주차"] = i
 
