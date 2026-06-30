@@ -324,3 +324,120 @@ def get_summary_stats(df: pd.DataFrame) -> dict:
         "수강료결제": funnel.get("수강료결제", 0),
         "수강포기": dropout,
     }
+
+def get_weekly_funnel_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """주차별 퍼널 통계 (사전신청자, 1주차, 2주차 등)"""
+    if df.empty or "그룹 미팅일 기준" not in df.columns:
+        return pd.DataFrame()
+
+    # 주차별로 그룹화
+    weekly_data = []
+
+    for week in df["그룹 미팅일 기준"].unique():
+        if pd.isna(week) or week == "" or week.strip() == "":
+            continue
+
+        week_df = df[df["그룹 미팅일 기준"] == week]
+
+        # 지원자 수 (신청자 이름이 있는 행)
+        applicant_count = 0
+        if "신청자 이름" in week_df.columns:
+            applicant_count = week_df["신청자 이름"].astype(str).str.strip().ne("").sum()
+        else:
+            applicant_count = len(week_df)
+
+        # 각 단계별 집계
+        paper_count = (week_df["서류 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "서류 합격" in week_df.columns else 0
+        interview_count = (week_df["인터뷰 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "인터뷰 합격" in week_df.columns else 0
+        admission_count = (week_df["최종 입학"].astype(str).str.strip().str.upper() == 'O').sum() if "최종 입학" in week_df.columns else 0
+        payment_count = (week_df["수강료 결제"].astype(str).str.strip().str.upper() == 'O').sum() if "수강료 결제" in week_df.columns else 0
+
+        weekly_data.append({
+            "주차": week,
+            "지원자": int(applicant_count),
+            "서류합격": int(paper_count),
+            "인터뷰합격": int(interview_count),
+            "최종입학": int(admission_count),
+            "자기부담금 결제": int(payment_count)
+        })
+
+    # 주차 순서대로 정렬 (사전신청자, 1주차, 2주차, ...)
+    week_order = {"사전신청자": 0}
+    for i in range(1, 50):
+        week_order[f"{i}주차"] = i
+
+    if weekly_data:
+        weekly_df = pd.DataFrame(weekly_data)
+        weekly_df["정렬순서"] = weekly_df["주차"].map(lambda x: week_order.get(x, 999))
+        weekly_df = weekly_df.sort_values("정렬순서").drop("정렬순서", axis=1).reset_index(drop=True)
+        return weekly_df
+
+    return pd.DataFrame()
+
+def get_weekly_rejection_stats(df: pd.DataFrame) -> dict:
+    """주차별 서류 불합격 사유"""
+    if df.empty or "그룹 미팅일 기준" not in df.columns:
+        return {}
+
+    weekly_rejection = {}
+
+    for week in df["그룹 미팅일 기준"].unique():
+        if pd.isna(week) or week == "" or week.strip() == "":
+            continue
+
+        week_df = df[df["그룹 미팅일 기준"] == week]
+
+        # 서류 불합격 필터링
+        rejection_df = week_df[week_df["서류 합격"].astype(str).str.strip().str.upper() == 'X'].copy()
+
+        if len(rejection_df) == 0:
+            weekly_rejection[week] = pd.DataFrame()
+            continue
+
+        # 사유 집계
+        if "사유" in rejection_df.columns:
+            reason_df = rejection_df[rejection_df["사유"].astype(str).str.strip() != ""].copy()
+            if len(reason_df) > 0:
+                reason_counts = reason_df["사유"].value_counts().reset_index()
+                reason_counts.columns = ["사유", "인원"]
+                weekly_rejection[week] = reason_counts.sort_values("인원", ascending=False)
+            else:
+                weekly_rejection[week] = pd.DataFrame({"사유": ["기타"], "인원": [len(rejection_df)]})
+        else:
+            weekly_rejection[week] = pd.DataFrame({"사유": ["기타"], "인원": [len(rejection_df)]})
+
+    return weekly_rejection
+
+def get_weekly_dropout_stats(df: pd.DataFrame) -> dict:
+    """주차별 수강포기 사유"""
+    if df.empty or "그룹 미팅일 기준" not in df.columns:
+        return {}
+
+    weekly_dropout = {}
+
+    for week in df["그룹 미팅일 기준"].unique():
+        if pd.isna(week) or week == "" or week.strip() == "":
+            continue
+
+        week_df = df[df["그룹 미팅일 기준"] == week]
+
+        # 수강포기 필터링
+        dropout_df = week_df[week_df["수강포기"].astype(str).str.strip() == "수강포기"].copy()
+
+        if len(dropout_df) == 0:
+            weekly_dropout[week] = pd.DataFrame()
+            continue
+
+        # 사유 집계
+        if "사유" in dropout_df.columns:
+            reason_df = dropout_df[dropout_df["사유"].astype(str).str.strip() != ""].copy()
+            if len(reason_df) > 0:
+                reason_counts = reason_df["사유"].value_counts().reset_index()
+                reason_counts.columns = ["사유", "인원"]
+                weekly_dropout[week] = reason_counts.sort_values("인원", ascending=False)
+            else:
+                weekly_dropout[week] = pd.DataFrame({"사유": ["기타"], "인원": [len(dropout_df)]})
+        else:
+            weekly_dropout[week] = pd.DataFrame({"사유": ["기타"], "인원": [len(dropout_df)]})
+
+    return weekly_dropout

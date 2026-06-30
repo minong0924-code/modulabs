@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 from src.config import COURSES, FUNNEL_LABELS, FUNNEL_COLS
-from src.data_loader import load_applicants, get_funnel_counts, get_channel_counts, get_daily_trend, get_dropout_reasons, get_summary_stats, get_channel_detailed_stats, get_document_rejection_stats
+from src.data_loader import load_applicants, get_funnel_counts, get_channel_counts, get_daily_trend, get_dropout_reasons, get_summary_stats, get_channel_detailed_stats, get_document_rejection_stats, get_weekly_funnel_stats, get_weekly_rejection_stats, get_weekly_dropout_stats
 from src.charts import create_funnel_chart, create_channel_donut_chart, create_channel_bar_chart, create_daily_trend_chart, create_dropout_reason_chart, create_channel_detailed_chart, create_top_channels_by_applicants_pie, create_top_channels_by_admission_pie, create_top_channels_by_paper_pie, create_top_channels_by_interview_pie, create_document_rejection_chart
 from datetime import datetime
 
@@ -86,6 +86,9 @@ channel_detailed_df = get_channel_detailed_stats(df)
 daily_df = get_daily_trend(df)
 dropout_df = get_dropout_reasons(df)
 rejection_df = get_document_rejection_stats(df)
+weekly_funnel_df = get_weekly_funnel_stats(df)
+weekly_rejection_dict = get_weekly_rejection_stats(df)
+weekly_dropout_dict = get_weekly_dropout_stats(df)
 
 # 메인 콘텐츠
 st.sidebar.success(f"✅ {selected_course['name']} {selected_cohort}기 데이터 로드 완료!")
@@ -126,6 +129,45 @@ with tab1:
     st.plotly_chart(fig_funnel, use_container_width=True)
 
 with tab2:
+    # 주차별 퍼널 현황
+    st.subheader("📅 주차별 퍼널 현황")
+
+    if not weekly_funnel_df.empty:
+        st.dataframe(weekly_funnel_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # 주차별 서류 불합격 및 수강포기 사유
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("📋 주차별 서류 불합격 사유")
+            if weekly_rejection_dict:
+                for week in weekly_funnel_df["주차"].unique():
+                    if week in weekly_rejection_dict and not weekly_rejection_dict[week].empty:
+                        st.write(f"**{week}**")
+                        st.dataframe(weekly_rejection_dict[week], use_container_width=True, hide_index=True)
+                    elif week in weekly_rejection_dict:
+                        st.write(f"**{week}** - 불합격자 없음")
+            else:
+                st.info("서류 불합격 데이터가 없습니다.")
+
+        with col2:
+            st.subheader("🚫 주차별 수강포기 사유")
+            if weekly_dropout_dict:
+                for week in weekly_funnel_df["주차"].unique():
+                    if week in weekly_dropout_dict and not weekly_dropout_dict[week].empty:
+                        st.write(f"**{week}**")
+                        st.dataframe(weekly_dropout_dict[week], use_container_width=True, hide_index=True)
+                    elif week in weekly_dropout_dict:
+                        st.write(f"**{week}** - 포기자 없음")
+            else:
+                st.info("수강포기 데이터가 없습니다.")
+    else:
+        st.info("주차별 데이터가 없습니다.")
+
+    st.markdown("---")
+
     # 일자별 지원자 현황
     st.subheader("일자별 지원자 추이")
     if not daily_df.empty:
