@@ -94,7 +94,7 @@ weekly_dropout_dict = get_weekly_dropout_stats(df)
 st.sidebar.success(f"✅ {selected_course['name']} {selected_cohort}기 데이터 로드 완료!")
 
 # 탭 생성
-tab1, tab2 = st.tabs(["📈 종합 현황", "📊 상세 분석"])
+tab1, tab2, tab3 = st.tabs(["📈 종합 현황", "📊 상세 분석", "📅 주차별 분석"])
 
 with tab1:
     # KPI 카드 (1행)
@@ -129,44 +129,6 @@ with tab1:
     st.plotly_chart(fig_funnel, use_container_width=True)
 
 with tab2:
-    # 주차별 퍼널 현황
-    st.subheader("📅 주차별 퍼널 현황")
-
-    if not weekly_funnel_df.empty:
-        st.dataframe(weekly_funnel_df, use_container_width=True, hide_index=True)
-
-        st.markdown("---")
-
-        # 주차별 서류 불합격 및 수강포기 사유
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("📋 주차별 서류 불합격 사유")
-            if weekly_rejection_dict:
-                for week in weekly_funnel_df["주차"].unique():
-                    if week in weekly_rejection_dict and not weekly_rejection_dict[week].empty:
-                        st.write(f"**{week}**")
-                        st.dataframe(weekly_rejection_dict[week], use_container_width=True, hide_index=True)
-                    elif week in weekly_rejection_dict:
-                        st.write(f"**{week}** - 불합격자 없음")
-            else:
-                st.info("서류 불합격 데이터가 없습니다.")
-
-        with col2:
-            st.subheader("🚫 주차별 수강포기 사유")
-            if weekly_dropout_dict:
-                for week in weekly_funnel_df["주차"].unique():
-                    if week in weekly_dropout_dict and not weekly_dropout_dict[week].empty:
-                        st.write(f"**{week}**")
-                        st.dataframe(weekly_dropout_dict[week], use_container_width=True, hide_index=True)
-                    elif week in weekly_dropout_dict:
-                        st.write(f"**{week}** - 포기자 없음")
-            else:
-                st.info("수강포기 데이터가 없습니다.")
-    else:
-        st.info("주차별 데이터가 없습니다.")
-
-    st.markdown("---")
 
     # 일자별 지원자 현황
     st.subheader("일자별 지원자 추이")
@@ -247,3 +209,40 @@ with tab2:
             st.dataframe(dropout_df, use_container_width=True, hide_index=True)
         else:
             st.info("수강포기 데이터가 없습니다.")
+
+with tab3:
+    st.subheader("📅 주차별 퍼널 현황")
+
+    if not weekly_funnel_df.empty:
+        st.dataframe(weekly_funnel_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # 주차별 서류 불합격 및 수강포기 사유
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("📋 주차별 서류 불합격 사유")
+            if weekly_rejection_dict:
+                for week in weekly_funnel_df["주차"].unique():
+                    if week in weekly_rejection_dict and not weekly_rejection_dict[week].empty:
+                        st.write(f"**{week}**")
+                        st.dataframe(weekly_rejection_dict[week], use_container_width=True, hide_index=True)
+                    elif week in weekly_rejection_dict:
+                        st.write(f"**{week}** - 불합격자 없음")
+            else:
+                st.info("서류 불합격 데이터가 없습니다.")
+
+        with col2:
+            st.subheader("🚫 주차별 수강포기 사유")
+            if weekly_dropout_dict:
+                for week in weekly_funnel_df["주차"].unique():
+                    if week in weekly_dropout_dict and not weekly_dropout_dict[week].empty:
+                        st.write(f"**{week}**")
+                        st.dataframe(weekly_dropout_dict[week], use_container_width=True, hide_index=True)
+                    elif week in weekly_dropout_dict:
+                        st.write(f"**{week}** - 포기자 없음")
+            else:
+                st.info("수강포기 데이터가 없습니다.")
+    else:
+        st.info("주차별 데이터가 없습니다.")
