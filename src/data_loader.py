@@ -326,7 +326,7 @@ def get_summary_stats(df: pd.DataFrame) -> dict:
     }
 
 def get_weekly_funnel_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """주차별 퍼널 통계 (사전신청자, 1주차, 2주차 등)"""
+    """주차별 퍼널 통계 (사전신청자, 1주차, 2주차 등) - 합격 비율 포함"""
     if df.empty or "그룹 미팅일 기준" not in df.columns:
         return pd.DataFrame()
 
@@ -352,13 +352,23 @@ def get_weekly_funnel_stats(df: pd.DataFrame) -> pd.DataFrame:
         admission_count = (week_df["최종 입학"].astype(str).str.strip().str.upper() == 'O').sum() if "최종 입학" in week_df.columns else 0
         payment_count = (week_df["수강료 결제"].astype(str).str.strip().str.upper() == 'O').sum() if "수강료 결제" in week_df.columns else 0
 
+        # 각 단계별 합격 비율 계산
+        paper_rate = (paper_count / max(applicant_count, 1)) * 100
+        interview_rate = (interview_count / max(paper_count, 1)) * 100
+        admission_rate = (admission_count / max(interview_count, 1)) * 100
+        payment_rate = (payment_count / max(admission_count, 1)) * 100
+
         weekly_data.append({
             "주차": week,
             "지원자": int(applicant_count),
             "서류합격": int(paper_count),
+            "서류합격율(%)": round(paper_rate, 1),
             "인터뷰합격": int(interview_count),
+            "인터뷰합격율(%)": round(interview_rate, 1),
             "최종입학": int(admission_count),
-            "자기부담금 결제": int(payment_count)
+            "최종입학율(%)": round(admission_rate, 1),
+            "자기부담금 결제": int(payment_count),
+            "결제율(%)": round(payment_rate, 1)
         })
 
     # 주차 순서대로 정렬 (사전신청자, 1주차, 2주차, ...)
