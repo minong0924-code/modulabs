@@ -264,7 +264,7 @@ with tab3:
 
         st.markdown("---")
 
-        st.subheader("📊 주차별 유입경로 분석")
+        st.subheader("📊 주차별 유입채널 현황")
         if not weekly_channel_df.empty:
             # 주차별로 데이터 분할하여 표시
             for week in sorted(weekly_channel_df["주차"].unique(), key=lambda x: week_order.get(x, 999)):
