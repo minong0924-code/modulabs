@@ -24,6 +24,10 @@ def load_applicants(sheet_id: str, sheet_name: str, header_row: int = 4) -> pd.D
     cols_to_keep = [col for col in REQUIRED_COLUMNS if col in df.columns]
     df = df[cols_to_keep]
 
+    # "수강료 결제" 컬럼이 없으면 빈 컬럼으로 생성 (프라이빗AI 등에서 사용)
+    if "수강료 결제" not in df.columns:
+        df["수강료 결제"] = ""
+
     # 일자 컬럼 처리
     if "일자" in df.columns:
         df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
