@@ -245,7 +245,7 @@ with tab3:
             # 주차별 총계 행 추가
             week_totals = rejection_sorted[sorted_cols[:-1]].sum()  # 총계 컬럼 제외
             week_totals['총계'] = week_totals.sum()
-            week_totals.name = '주차별 합계'
+            week_totals.name = '총계'
 
             # 총계 행 추가
             rejection_with_total = pd.concat([rejection_sorted, pd.DataFrame(week_totals).T])
