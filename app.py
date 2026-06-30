@@ -214,17 +214,29 @@ with tab3:
     st.subheader("📅 주차별 퍼널 현황")
 
     if not weekly_funnel_df.empty:
-        st.dataframe(weekly_funnel_df, use_container_width=True, hide_index=True)
+        # 주차 순서 정렬 (사전신청자, 1주차, 2주차, ...)
+        week_order = {"사전신청자": 0}
+        for i in range(1, 50):
+            week_order[f"{i}주차"] = i
+
+        weekly_funnel_sorted = weekly_funnel_df.copy()
+        weekly_funnel_sorted["정렬순서"] = weekly_funnel_sorted["주차"].map(lambda x: week_order.get(x, 999))
+        weekly_funnel_sorted = weekly_funnel_sorted.sort_values("정렬순서").drop("정렬순서", axis=1).reset_index(drop=True)
+
+        st.dataframe(weekly_funnel_sorted, use_container_width=True, hide_index=True)
 
         st.markdown("---")
 
         # 주차별 서류 불합격 및 수강포기 사유
         col1, col2 = st.columns(2)
 
+        # 주차 순서 정렬
+        sorted_weeks = weekly_funnel_sorted["주차"].tolist()
+
         with col1:
             st.subheader("📋 주차별 서류 불합격 사유")
             if weekly_rejection_dict:
-                for week in weekly_funnel_df["주차"].unique():
+                for week in sorted_weeks:
                     if week in weekly_rejection_dict and not weekly_rejection_dict[week].empty:
                         st.write(f"**{week}**")
                         st.dataframe(weekly_rejection_dict[week], use_container_width=True, hide_index=True)
@@ -236,7 +248,7 @@ with tab3:
         with col2:
             st.subheader("🚫 주차별 수강포기 사유")
             if weekly_dropout_dict:
-                for week in weekly_funnel_df["주차"].unique():
+                for week in sorted_weeks:
                     if week in weekly_dropout_dict and not weekly_dropout_dict[week].empty:
                         st.write(f"**{week}**")
                         st.dataframe(weekly_dropout_dict[week], use_container_width=True, hide_index=True)
