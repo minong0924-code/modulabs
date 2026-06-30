@@ -271,6 +271,8 @@ with tab3:
                 week_data = weekly_channel_df[weekly_channel_df["주차"] == week].drop("주차", axis=1).reset_index(drop=True)
                 # 지원자 수 기준 내림차순 정렬
                 week_data = week_data.sort_values("지원자", ascending=False).reset_index(drop=True)
+                # 컬럼 순서 명시적 지정
+                week_data = week_data[["채널", "지원자", "서류합격", "서류합격율(%)", "서류불합격", "서류불합격율(%)"]]
 
                 st.write(f"**{week}**")
                 st.dataframe(week_data, use_container_width=True, hide_index=True)
