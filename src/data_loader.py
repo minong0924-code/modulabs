@@ -528,3 +528,71 @@ def get_weekly_rejection_stats(df: pd.DataFrame) -> dict:
 
     return pivot_df
 
+def get_weekly_meta_material_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """주차별 메타 유입자의 소재별 퍼널 통계 (주차, 소재, 지원자, 서류합격, 서류불합격)"""
+    if df.empty or "그룹 미팅일 기준" not in df.columns or "유입 채널" not in df.columns:
+        return pd.DataFrame()
+
+    # 주차 순서
+    week_order = {"사전신청": 0, "사전신청자": 0}
+    for i in range(1, 50):
+        week_order[f"{i}주차"] = i
+
+    material_data = []
+
+    # 각 주차별로 처리
+    for week in df["그룹 미팅일 기준"].unique():
+        if pd.isna(week) or week == "" or week.strip() == "":
+            continue
+
+        week_df = df[df["그룹 미팅일 기준"] == week]
+
+        # 메타 유입자만 필터링
+        meta_df = week_df[week_df["유입 채널"].astype(str).str.strip() == "메타"].copy()
+
+        if meta_df.empty:
+            continue
+
+        # 소재 컬럼이 없으면 스킵
+        if "유입 소재 및 키워드" not in meta_df.columns:
+            continue
+
+        # 각 소재별로 통계 생성
+        for material in meta_df["유입 소재 및 키워드"].unique():
+            if pd.isna(material) or str(material).strip() == "":
+                continue
+
+            material_df = meta_df[meta_df["유입 소재 및 키워드"] == material]
+
+            # 지원자 수
+            applicant_count = len(material_df)
+
+            # 서류합격 수
+            paper_pass_count = (material_df["서류 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "서류 합격" in material_df.columns else 0
+
+            # 서류불합격 수
+            paper_reject_count = (material_df["서류 합격"].astype(str).str.strip().str.upper() == 'X').sum() if "서류 합격" in material_df.columns else 0
+
+            # 서류합격률
+            paper_pass_rate = (paper_pass_count / max(applicant_count, 1)) * 100
+
+            # 서류불합격률
+            paper_reject_rate = (paper_reject_count / max(applicant_count, 1)) * 100
+
+            material_data.append({
+                "주차": week,
+                "소재": material,
+                "지원자": int(applicant_count),
+                "서류합격": int(paper_pass_count),
+                "서류합격율(%)": round(paper_pass_rate, 1),
+                "서류불합격": int(paper_reject_count),
+                "서류불합격율(%)": round(paper_reject_rate, 1)
+            })
+
+    if not material_data:
+        return pd.DataFrame()
+
+    material_df = pd.DataFrame(material_data)
+
+    return material_df
+

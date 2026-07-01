@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 from src.config import COURSES, FUNNEL_LABELS, FUNNEL_COLS
-from src.data_loader import load_applicants, get_funnel_counts, get_channel_counts, get_daily_trend, get_dropout_reasons, get_summary_stats, get_channel_detailed_stats, get_document_rejection_stats, get_weekly_funnel_stats, get_weekly_rejection_stats, get_weekly_channel_stats
+from src.data_loader import load_applicants, get_funnel_counts, get_channel_counts, get_daily_trend, get_dropout_reasons, get_summary_stats, get_channel_detailed_stats, get_document_rejection_stats, get_weekly_funnel_stats, get_weekly_rejection_stats, get_weekly_channel_stats, get_weekly_meta_material_stats
 from src.charts import create_funnel_chart, create_channel_donut_chart, create_channel_bar_chart, create_daily_trend_chart, create_dropout_reason_chart, create_channel_detailed_chart, create_top_channels_by_applicants_pie, create_top_channels_by_admission_pie, create_top_channels_by_paper_pie, create_top_channels_by_interview_pie, create_document_rejection_chart
 from datetime import datetime
 
@@ -89,6 +89,7 @@ rejection_df = get_document_rejection_stats(df)
 weekly_funnel_df = get_weekly_funnel_stats(df)
 weekly_rejection_df = get_weekly_rejection_stats(df)
 weekly_channel_df = get_weekly_channel_stats(df)
+weekly_meta_material_df = get_weekly_meta_material_stats(df)
 
 # 메인 콘텐츠
 st.sidebar.success(f"✅ {selected_course['name']} {selected_cohort}기 데이터 로드 완료!")
@@ -270,6 +271,10 @@ with tab3:
         st.markdown("---")
 
         st.subheader("📊 주차별 유입채널 현황")
+
+        # 메타 토글
+        show_meta_detail = st.toggle("📱 메타 소재별 상세보기", value=False)
+
         if not weekly_channel_df.empty:
             # 주차별로 데이터 분할하여 표시
             for week in sorted(weekly_channel_df["주차"].unique(), key=lambda x: week_order.get(x, 999)):
@@ -281,6 +286,17 @@ with tab3:
 
                 st.write(f"**{week}**")
                 st.dataframe(week_data, use_container_width=True, hide_index=True)
+
+                # 메타 토글이 ON이고 메타 유입자가 있으면 소재별 상세정보 표시
+                if show_meta_detail and not weekly_meta_material_df.empty:
+                    week_meta = weekly_meta_material_df[weekly_meta_material_df["주차"] == week]
+                    if not week_meta.empty:
+                        week_meta_display = week_meta.drop("주차", axis=1).reset_index(drop=True)
+                        week_meta_display = week_meta_display.sort_values("지원자", ascending=False).reset_index(drop=True)
+                        week_meta_display = week_meta_display[["소재", "지원자", "서류합격", "서류합격율(%)", "서류불합격", "서류불합격율(%)"]]
+                        st.caption("└ 메타 소재별 상세")
+                        st.dataframe(week_meta_display, use_container_width=True, hide_index=True)
+
                 st.write("")  # 여백
         else:
             st.info("유입경로별 데이터가 없습니다.")
