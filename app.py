@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 from src.config import COURSES, FUNNEL_LABELS, FUNNEL_COLS
-from src.data_loader import load_applicants, get_funnel_counts, get_channel_counts, get_daily_trend, get_dropout_reasons, get_summary_stats, get_channel_detailed_stats, get_document_rejection_stats, get_weekly_funnel_stats, get_weekly_rejection_stats, get_weekly_channel_stats, get_weekly_meta_material_stats
+from src.data_loader import load_applicants, get_funnel_counts, get_channel_counts, get_daily_trend, get_dropout_reasons, get_summary_stats, get_channel_detailed_stats, get_document_rejection_stats, get_weekly_funnel_stats, get_weekly_rejection_stats, get_weekly_channel_stats, get_weekly_meta_material_stats, get_meta_material_detailed_stats
 from src.charts import create_funnel_chart, create_channel_donut_chart, create_channel_bar_chart, create_daily_trend_chart, create_dropout_reason_chart, create_channel_detailed_chart, create_top_channels_by_applicants_pie, create_top_channels_by_admission_pie, create_top_channels_by_paper_pie, create_top_channels_by_interview_pie, create_document_rejection_chart
 from datetime import datetime
 
@@ -90,6 +90,7 @@ weekly_funnel_df = get_weekly_funnel_stats(df)
 weekly_rejection_df = get_weekly_rejection_stats(df)
 weekly_channel_df = get_weekly_channel_stats(df)
 weekly_meta_material_df = get_weekly_meta_material_stats(df)
+meta_material_detailed_df = get_meta_material_detailed_stats(df)
 
 # 메인 콘텐츠
 st.sidebar.success(f"✅ {selected_course['name']} {selected_cohort}기 데이터 로드 완료!")
@@ -143,6 +144,9 @@ with tab2:
 
     st.subheader("📊 유입 채널별 상세 현황")
 
+    # 메타 토글
+    show_meta_detail_tab2 = st.toggle("📱 메타 소재별 상세보기", value=False, key="meta_detail_tab2")
+
     # 상위 채널 원형 차트 (1행 4열)
     col1, col2, col3, col4 = st.columns(4)
 
@@ -183,6 +187,18 @@ with tab2:
             "자기부담금 결제", "결제율(%)"
         ]].set_index("채널")
         st.dataframe(display_df, use_container_width=True)
+
+        # 메타 소재별 상세 데이터 표시
+        if show_meta_detail_tab2 and not meta_material_detailed_df.empty:
+            st.markdown("---")
+            st.subheader("📱 메타 소재별 상세")
+            meta_display_df = meta_material_detailed_df[[
+                "소재", "지원자", "서류합격", "서류합격율(%)",
+                "인터뷰합격", "인터뷰합격율(%)",
+                "최종입학", "최종입학율(%)",
+                "자기부담금 결제", "결제율(%)"
+            ]].set_index("소재")
+            st.dataframe(meta_display_df, use_container_width=True)
     else:
         st.info("채널별 상세 데이터가 없습니다.")
 

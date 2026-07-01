@@ -596,3 +596,60 @@ def get_weekly_meta_material_stats(df: pd.DataFrame) -> pd.DataFrame:
 
     return material_df
 
+def get_meta_material_detailed_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """메타 유입자의 소재별 상세 퍼널 통계 (지원자, 서류, 인터뷰, 입학, 결제 + 각 단계별 합격률)"""
+    if df.empty or "유입 채널" not in df.columns:
+        return pd.DataFrame()
+
+    # 메타 유입자만 필터링
+    meta_df = df[df["유입 채널"].astype(str).str.strip() == "메타"].copy()
+
+    if meta_df.empty:
+        return pd.DataFrame()
+
+    # 소재 컬럼이 없으면 반환
+    if "유입 소재 및 키워드" not in meta_df.columns:
+        return pd.DataFrame()
+
+    material_data = []
+
+    # 각 소재별로 통계 생성
+    for material in meta_df["유입 소재 및 키워드"].unique():
+        if pd.isna(material) or str(material).strip() == "":
+            continue
+
+        material_df = meta_df[meta_df["유입 소재 및 키워드"] == material]
+        applicant_count = len(material_df)
+
+        # 각 단계별 'O' 개수 세기
+        paper_count = (material_df["서류 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "서류 합격" in material_df.columns else 0
+        interview_count = (material_df["인터뷰 합격"].astype(str).str.strip().str.upper() == 'O').sum() if "인터뷰 합격" in material_df.columns else 0
+        admission_count = (material_df["최종 입학"].astype(str).str.strip().str.upper() == 'O').sum() if "최종 입학" in material_df.columns else 0
+        payment_count = (material_df["수강료 결제"].astype(str).str.strip().str.upper() == 'O').sum() if "수강료 결제" in material_df.columns else 0
+
+        # 각 단계별 합격률 계산
+        paper_rate = (paper_count / max(applicant_count, 1)) * 100
+        interview_rate = (interview_count / max(paper_count, 1)) * 100
+        admission_rate = (admission_count / max(interview_count, 1)) * 100
+        payment_rate = (payment_count / max(admission_count, 1)) * 100
+
+        material_data.append({
+            "소재": material,
+            "지원자": applicant_count,
+            "서류합격": int(paper_count),
+            "서류합격율(%)": round(paper_rate, 1),
+            "인터뷰합격": int(interview_count),
+            "인터뷰합격율(%)": round(interview_rate, 1),
+            "최종입학": int(admission_count),
+            "최종입학율(%)": round(admission_rate, 1),
+            "자기부담금 결제": int(payment_count),
+            "결제율(%)": round(payment_rate, 1)
+        })
+
+    if not material_data:
+        return pd.DataFrame()
+
+    material_df = pd.DataFrame(material_data).sort_values("지원자", ascending=False)
+
+    return material_df
+
