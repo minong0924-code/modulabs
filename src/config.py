@@ -24,6 +24,11 @@ COURSES = {
                 "sheet_id": "1B9qZFr5lPdveCbOXKzZVur1RROQVaLosD8-2wd5wAwk",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
+            },
+            2: {
+                "sheet_id": "1V3LwfYHEUM9L2LAnw_9NU8jGXkiRWmMJ2GdTgXq6n7A",
+                "sheet_name": "2.2 일자별 신청현황",
+                "header_row": DEFAULT_HEADER_ROW
             }
         }
     },
@@ -79,6 +84,11 @@ COURSES = {
         "cohorts": {
             7: {
                 "sheet_id": "1b_fMajcQe8mhaHWf1qDoP_mDpNYr-ZUshUKIwgt20zk",
+                "sheet_name": "2.2 일자별 신청현황",
+                "header_row": DEFAULT_HEADER_ROW
+            },
+            8: {
+                "sheet_id": "1mMShR5uoS-1GZsWMcrhZOwyYS9TXjeenS1ILuoB_JAQ",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
             }
