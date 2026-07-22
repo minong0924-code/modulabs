@@ -102,7 +102,7 @@ with tab1:
     # KPI 카드 (1행)
     st.subheader("📊 모집 퍼널 현황")
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         st.metric("지원자", f"{stats['지원자']}명")
@@ -122,9 +122,6 @@ with tab1:
     with col5:
         자기부담금결제_비율 = (stats['수강료결제']/max(stats['최종입학'], 1)*100)
         st.metric("자기부담금 결제", f"{stats['수강료결제']}명", f"{자기부담금결제_비율:.0f}%")
-
-    with col6:
-        st.metric("포기", f"{stats['수강포기']}명")
 
     # 퍼널 차트
     fig_funnel = create_funnel_chart(funnel_counts)

@@ -231,7 +231,7 @@ def get_dropout_count(df: pd.DataFrame) -> int:
     """수강포기자 수"""
     if df.empty or "수강포기" not in df.columns:
         return 0
-    return (df["수강포기"] != '').sum()
+    return (df["수강포기"].astype(str).str.strip() == "수강포기").sum()
 
 def get_document_rejection_stats(df: pd.DataFrame) -> pd.DataFrame:
     """서류 불합격자 사유별 집계 (서류 합격이 'X'인 경우)"""
