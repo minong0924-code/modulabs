@@ -116,6 +116,11 @@ COURSES = {
                 "sheet_id": "1mMShR5uoS-1GZsWMcrhZOwyYS9TXjeenS1ILuoB_JAQ",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
+            },
+            9: {
+                "sheet_id": "1J_9nuN-8t_eKtS0YM4twOMoBOQI-TBB_ItZVvM-JdVo",
+                "sheet_name": "2.2 일자별 신청현황",
+                "header_row": DEFAULT_HEADER_ROW
             }
         }
     },
