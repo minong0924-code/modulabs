@@ -21,6 +21,8 @@ WAKE_BUTTON_PATTERN = re.compile(r"get this app back up", re.IGNORECASE)
 RENDER_TIMEOUT_MS = 120_000
 # 세션을 유지하기 위해 페이지를 열어 두는 시간 (초)
 HOLD_SECONDS = 30
+# 실패 시 저장할 스크린샷 경로 (워크플로에서 아티팩트로 업로드)
+FAILURE_SCREENSHOT_PATH = "keep_alive_failure.png"
 
 
 def keep_alive(url: str) -> bool:
@@ -34,8 +36,8 @@ def keep_alive(url: str) -> bool:
     """
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
+        page = browser.new_page()
         try:
-            page = browser.new_page()
             logger.info("대시보드 접속: %s", url)
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
@@ -50,9 +52,27 @@ def keep_alive(url: str) -> bool:
             return True
         except Exception:
             logger.exception("대시보드 접속 실패")
+            save_failure_diagnostics(page)
             return False
         finally:
             browser.close()
+
+
+def save_failure_diagnostics(page) -> None:
+    """실패 시점의 URL, 제목, 화면을 로그와 스크린샷 파일로 남깁니다.
+
+    Args:
+        page: Playwright 페이지 객체
+    """
+    try:
+        logger.error("실패 시점 URL: %s", page.url)
+        logger.error("실패 시점 페이지 제목: %s", page.title())
+        body_text = page.inner_text("body")[:500]
+        logger.error("실패 시점 본문 일부:\n%s", body_text)
+        page.screenshot(path=FAILURE_SCREENSHOT_PATH, full_page=True)
+        logger.error("스크린샷 저장: %s", FAILURE_SCREENSHOT_PATH)
+    except Exception:
+        logger.exception("진단 정보 수집 실패")
 
 
 def main() -> None:
