@@ -1,0 +1,29 @@
+# Streamlit Community Cloud 절전 방지: 6시간마다 대시보드를 브라우저로 열어 세션을 유지합니다.
+name: Keep Streamlit App Alive
+
+on:
+  schedule:
+    # 매 6시간 (UTC 기준)
+    - cron: "0 */6 * * *"
+  # Actions 탭에서 수동 실행 가능
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Playwright 및 Chromium 설치
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: 대시보드 접속
+        env:
+          APP_URL: https://modulabs-marketing-dashboard.streamlit.app/
+        run: python scripts/keep_alive.py
