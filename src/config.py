@@ -4,7 +4,7 @@
 DEFAULT_HEADER_ROW = 4
 
 COURSES = {
-    # 실업자 과정 (5개)
+    # 실업자 과정 (4개)
     "ai_data_intel": {
         "name": "AI데이터 인텔리전스",
         "type": "unemployed",
@@ -16,6 +16,11 @@ COURSES = {
             },
             2: {
                 "sheet_id": "1CtAxiS1avLv_1FEeqSwsWtpGJklo38d8HmOAhmyli9o",
+                "sheet_name": "2.2 일자별 신청현황",
+                "header_row": DEFAULT_HEADER_ROW
+            },
+            3: {
+                "sheet_id": "1WNKASohoy1Fznprdt4lvyLuciCt-CaNSGZ65AVCbRi4",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
             }
@@ -37,6 +42,11 @@ COURSES = {
             },
             3: {
                 "sheet_id": "1Ag9T9TjTKQLH0WdS4tpFhE0Vsc1wFiejhrrzlfDlcUg",
+                "sheet_name": "2.2 일자별 신청현황",
+                "header_row": DEFAULT_HEADER_ROW
+            },
+            4: {
+                "sheet_id": "1jDwsfkHQpgSZSc1XcDQg-bW6oWC_GEllL_AWNWddR6c",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
             }
@@ -74,18 +84,6 @@ COURSES = {
             }
         }
     },
-    "ai_engineer": {
-        "name": "AI엔지니어",
-        "type": "unemployed",
-        "cohorts": {
-            1: {
-                "sheet_id": "",
-                "sheet_name": "2.2 일자별 신청현황",
-                "header_row": DEFAULT_HEADER_ROW
-            }
-        }
-    },
-
     # 재직자 과정 (2개)
     "planning_dev": {
         "name": "재직자 기획개발",
@@ -119,6 +117,11 @@ COURSES = {
             },
             9: {
                 "sheet_id": "1J_9nuN-8t_eKtS0YM4twOMoBOQI-TBB_ItZVvM-JdVo",
+                "sheet_name": "2.2 일자별 신청현황",
+                "header_row": DEFAULT_HEADER_ROW
+            },
+            10: {
+                "sheet_id": "1VsqP0-ByDOf8OLBE-BS5sZYvdvILfUp84BPO4F5yJ_M",
                 "sheet_name": "2.2 일자별 신청현황",
                 "header_row": DEFAULT_HEADER_ROW
             }
@@ -180,3 +183,18 @@ FUNNEL_LABELS = [
     "최종입학",
     "수강료결제"
 ]
+
+# BigQuery 과정 코드 → config.py 과정ID 매핑
+COURSE_MAPPING = {
+    "RESEARCH": "ai_researcher",
+    "EDATA": "data_analysis",
+    "EGIGAE": "planning_dev",
+    "AI-DATA": "ai_data_intel",
+    "AI-AGENT": "ai_agent",
+    "PRIVATE-AI": "private_ai",
+}
+
+# 미매핑 과정 코드 (시트가 아직 없거나 준비 중)
+UNMAPPED_COURSES = {
+    "ELLM": "미래언어모델(미매핑)",
+}
