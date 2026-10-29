@@ -1,18 +1,20 @@
 # BigQuery 지원자 매칭 결과를 과정별 시트에 기록합니다.
 # 매일 자동으로 어제·그제 신청자를 시트에 기록합니다 (예약 실행은 항상 기록).
 # 이름·연령대는 매번 기록하고, 유입 정보(채널·소재·캠페인)는 GA 데이터가 준비된 날짜만 기록합니다.
-# 실행 시각(한국 시간): 08:30, 10:00, 11:00, 13:00, 15:00
+# 실행 시각(한국 시간): 08:37, 10:07, 11:13, 13:17, 15:23 (GitHub 예약 지연을 피하려 분을 비켜 설정)
+# 예약 실행이 누락돼도 스크립트가 최근 7일을 다시 확인하므로 다음 실행에서 자동 보충됩니다.
 # 수동 실행(workflow_dispatch)은 apply 체크 여부에 따라 드라이런 또는 기록됩니다.
 name: Sync GA Channels to Sheets
 
 on:
   schedule:
-    # 한국 시간 08:30, 10:00, 11:00, 13:00, 15:00 (UTC 기준)
-    - cron: "30 23 * * *"
-    - cron: "0 1 * * *"
-    - cron: "0 2 * * *"
-    - cron: "0 4 * * *"
-    - cron: "0 6 * * *"
+    # 한국 시간 08:37, 10:07, 11:13, 13:17, 15:23 (UTC 기준)
+    # 정각·30분은 GitHub 예약 실행이 몰려 지연되기 쉬워 분을 비켜 설정
+    - cron: "37 23 * * *"
+    - cron: "7 1 * * *"
+    - cron: "13 2 * * *"
+    - cron: "17 4 * * *"
+    - cron: "23 6 * * *"
   workflow_dispatch:
     inputs:
       start:
@@ -45,6 +47,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 매칭 결과 시트 반영
+        id: sync
         env:
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           START_DATE: ${{ inputs.start }}
@@ -57,3 +60,13 @@ jobs:
           [ -n "$END_DATE" ] && ARGS="$ARGS --end $END_DATE"
           [ "$APPLY" = "true" ] && ARGS="$ARGS --apply"
           python scripts/sync_ga_channels.py $ARGS
+
+      - name: 실행 결과 Slack 알림
+        # 성공·실패와 관계없이 결과를 알리고, 웹훅 URL이 없으면 건너뜁니다
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SYNC_OUTCOME: ${{ steps.sync.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python scripts/notify_slack.py --title "시트 기록 (GitHub)" --status "$SYNC_OUTCOME" --detail "실행 로그: $RUN_URL"
