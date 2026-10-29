@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sys
+import tomllib
 from collections import defaultdict
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from gspread.utils import rowcol_to_a1
 
 # src 패키지 import를 위해 프로젝트 루트를 경로에 추가
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SECRETS_PATH = PROJECT_ROOT / ".streamlit" / "secrets.toml"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import COURSE_MAPPING, COURSES  # noqa: E402
@@ -130,7 +132,7 @@ GA_DEFAULT_CAMPAIGNS = {"(direct)", "(referral)", "(organic)"}
 
 
 def get_credentials(scopes):
-    """GCP_SERVICE_ACCOUNT_JSON 환경변수에서 서비스 계정 자격증명을 로드합니다.
+    """서비스 계정 자격증명을 환경변수 또는 .streamlit/secrets.toml에서 로드합니다.
 
     Args:
         scopes: 요청할 OAuth 스코프 목록
@@ -139,9 +141,15 @@ def get_credentials(scopes):
         google.oauth2 Credentials 객체
     """
     raw = os.getenv("GCP_SERVICE_ACCOUNT_JSON")
-    if not raw:
-        raise RuntimeError("GCP_SERVICE_ACCOUNT_JSON 환경변수가 없습니다.")
-    return Credentials.from_service_account_info(json.loads(raw), scopes=scopes)
+    if raw:
+        info = json.loads(raw)
+    elif SECRETS_PATH.exists():
+        # 로컬 PC 실행용: DB 추출 스크립트와 같은 secrets.toml 사용
+        secrets = tomllib.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+        info = dict(secrets["gcp_service_account"])
+    else:
+        raise RuntimeError("GCP_SERVICE_ACCOUNT_JSON 환경변수 또는 .streamlit/secrets.toml이 없습니다.")
+    return Credentials.from_service_account_info(info, scopes=scopes)
 
 
 def parse_date(value):
