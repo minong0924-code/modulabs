@@ -278,6 +278,57 @@ def find_header_row(sheet_values, default_row):
     raise ValueError(f"상단 15행에서 {REQUIRED_HEADER_TITLES} 헤더를 찾지 못했습니다.")
 
 
+def last_data_row(sheet_values, header_row, col_index):
+    """이름 또는 일자가 있는 마지막 행 번호를 반환합니다. 데이터가 없으면 헤더 행입니다.
+
+    Args:
+        sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
+        header_row: 헤더 행 번호 (1-based)
+        col_index: 컬럼 키별 0-based 인덱스
+
+    Returns:
+        마지막 데이터 행 번호 (1-based)
+    """
+    last = header_row
+    for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
+        if cell(row, col_index["name"]) or cell(row, col_index["date"]):
+            last = row_no
+    return last
+
+
+def date_separator_of(sheet_values, header_row, col_index):
+    """기존 일자 셀의 구분 기호('-', '.', '/')를 찾습니다. 찾지 못하면 '-'입니다.
+
+    Args:
+        sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
+        header_row: 헤더 행 번호 (1-based)
+        col_index: 컬럼 키별 0-based 인덱스
+
+    Returns:
+        날짜 구분 기호 문자열
+    """
+    for row in reversed(sheet_values[header_row:]):
+        text = cell(row, col_index["date"])
+        if parse_date(text):
+            for sep in (".", "/", "-"):
+                if sep in text:
+                    return sep
+    return "-"
+
+
+def format_date(day, sep):
+    """date를 시트 일자 표기(YYYY{sep}MM{sep}DD) 문자열로 바꿉니다.
+
+    Args:
+        day: 날짜 (datetime.date)
+        sep: 구분 기호
+
+    Returns:
+        표기에 맞춘 날짜 문자열
+    """
+    return f"{day:%Y}{sep}{day:%m}{sep}{day:%d}"
+
+
 def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset()):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
 
@@ -312,24 +363,46 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         if name and date:
             sheet_index[(name, date)].append(row_no)
 
+    # 신규 신청자는 데이터 맨 아래 다음 행에 추가 (일자 표기는 기존 행 형식과 맞춤)
+    next_row = last_data_row(sheet_values, header_row, col_index) + 1
+    date_sep = date_separator_of(sheet_values, header_row, col_index)
+
     updates = []
     skipped = []
+    appended = set()
     for match in matched_rows:
         name = match["name"].strip()
         date = parse_date(match["db_submitted_at"])
-        row_nos = sheet_index.get((name, date), [])
-        if len(row_nos) != 1:
-            skipped.append(f"{name} {date}: 시트 매칭 {len(row_nos)}건")
-            continue
-
-        row_no = row_nos[0]
-        row = sheet_values[row_no - 1]
         channel = classify_channel(match["session_source"], match["session_medium"], match["session_campaign"])
         values = {
             "channel": channel or "",
             "material": material_for(channel, match),
             "campaign": campaign_for(channel, match),
         }
+        row_nos = sheet_index.get((name, date), [])
+
+        if not row_nos:
+            if (name, date) in appended:
+                continue
+            appended.add((name, date))
+            new_values = {"date": format_date(date, date_sep), "name": name, **values}
+            for field, value in new_values.items():
+                if field not in col_index or not value or value in GA_PLACEHOLDERS:
+                    continue
+                updates.append({
+                    "range": rowcol_to_a1(next_row, col_index[field] + 1),
+                    "values": [[value]],
+                })
+            logger.info("신규 행 추가: %d행 %s %s (채널: %s)", next_row, date, name, channel or "미분류")
+            next_row += 1
+            continue
+
+        if len(row_nos) != 1:
+            skipped.append(f"{name} {date}: 시트 매칭 {len(row_nos)}건")
+            continue
+
+        row_no = row_nos[0]
+        row = sheet_values[row_no - 1]
         for field, value in values.items():
             # 컬럼이 없거나 이미 값이 있으면 건드리지 않음 (사람이 입력한 내용 보호)
             if field not in col_index or not value or value in GA_PLACEHOLDERS or cell(row, col_index[field]):
