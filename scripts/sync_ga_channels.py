@@ -56,7 +56,7 @@ REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
 OPTIONAL_FIELDS = {"campaign"}
 
 # 이 날짜 이전 신청자는 기록하지 않음 (기존 시트 데이터 보호, 신규 신청분부터 반영)
-APPLY_START_DATE = dt.date(2026, 10, 29)
+APPLY_START_DATE = dt.date(2026, 10, 28)
 
 # 기록에서 제외할 신청자 이름 (대행사 테스트 데이터)
 EXCLUDED_NAMES = {"김보현"}
