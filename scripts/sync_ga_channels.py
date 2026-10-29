@@ -682,7 +682,7 @@ def parse_cli_date(text):
 def main():
     """CLI 진입점: 기본 정보는 바로, 유입 정보는 GA가 준비된 날짜만 과정별 시트에 기록합니다."""
     parser = argparse.ArgumentParser(description="BigQuery 매칭 결과를 과정별 시트에 기록")
-    parser.add_argument("--start", type=parse_cli_date, help="시작일 YYYY-MM-DD (기본: 어제와 그제 KST)")
+    parser.add_argument("--start", type=parse_cli_date, help="시작일 YYYY-MM-DD (기본: 최근 7일 KST)")
     parser.add_argument("--end", type=parse_cli_date, help="종료일 YYYY-MM-DD (기본: 어제 KST)")
     parser.add_argument("--apply", action="store_true", help="실제로 시트에 기록 (없으면 드라이런)")
     args = parser.parse_args()
@@ -691,8 +691,8 @@ def main():
     if args.start:
         start, end = args.start, args.end or args.start
     else:
-        # GA가 늦게 올라오는 날을 위해 어제와 그제를 함께 확인
-        start, end = yesterday - dt.timedelta(days=1), args.end or yesterday
+        # 주말 등 PC가 꺼져 DB 추출이 밀린 경우와 GA가 늦게 올라오는 경우를 위해 최근 7일을 함께 확인
+        start, end = yesterday - dt.timedelta(days=6), args.end or yesterday
     mode = "APPLY" if args.apply else "DRY-RUN"
     logger.info("실행 모드: %s, 기간: %s ~ %s", mode, start, end)
 
