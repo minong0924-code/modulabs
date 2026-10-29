@@ -105,6 +105,8 @@ def fetch_from_db(env):
         user=env["PG_USER"], password=env["PG_PASSWORD"], connect_timeout=15,
     ) as conn:
         with conn.cursor() as cur:
+            # 기존 BigQuery 데이터는 한국 시각으로 저장되어 있으므로 접속 시간대를 한국 시간으로 맞춤
+            cur.execute("SET TIME ZONE 'Asia/Seoul'")
             cur.execute(EXTRACT_SQL)
             columns = [c.name for c in cur.description]
             for values in cur.fetchall():
@@ -113,8 +115,8 @@ def fetch_from_db(env):
                     # 같은 이메일이 여러 회원과 연결되면 첫 번째 것만 사용
                     continue
                 rows[row["apply_id"]] = {
-                    # DB 값은 UTC 기준이므로 +00:00을 붙여 BigQuery가 시간대를 잘못 해석하지 않도록 함
-                    "submitted_at": row["submitted_at"].replace(tzinfo=None).isoformat(sep="T") + "+00:00",
+                    # 접속 시간대를 한국 시간으로 설정했으므로 한국 시각(시간대 표기 없음)으로 저장 (기존 데이터와 동일 방식)
+                    "submitted_at": row["submitted_at"].replace(tzinfo=None).isoformat(sep=" "),
                     "apply_id": row["apply_id"],
                     "member_id": row["member_id"],
                     "uuid": row["uuid"],
