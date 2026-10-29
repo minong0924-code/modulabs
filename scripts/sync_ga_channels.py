@@ -69,7 +69,8 @@ DATE_FORMATS = [
     "%Y-%m-%d %H:%M:%S",
 ]
 
-GA_NOT_SET = "(not set)"
+# GA에서 값이 없을 때 쓰는 placeholder (시트에 기록하지 않음)
+GA_PLACEHOLDERS = {"(not set)", "(not provided)"}
 
 
 def get_credentials(scopes):
@@ -128,7 +129,7 @@ def join_material(content, term):
     Returns:
         '소재 / 키워드' 형식 문자열 (둘 다 없으면 빈 문자열)
     """
-    parts = [p for p in (content, term) if p and p != GA_NOT_SET]
+    parts = [p for p in (content, term) if p and p not in GA_PLACEHOLDERS]
     return " / ".join(parts)
 
 
@@ -229,7 +230,7 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         }
         for field, value in values.items():
             # 컬럼이 없거나 이미 값이 있으면 건드리지 않음 (사람이 입력한 내용 보호)
-            if field not in col_index or not value or cell(row, col_index[field]):
+            if field not in col_index or not value or value in GA_PLACEHOLDERS or cell(row, col_index[field]):
                 continue
             updates.append({
                 "range": rowcol_to_a1(row_no, col_index[field] + 1),
