@@ -1,12 +1,12 @@
 # BigQuery 지원자 매칭 결과를 과정별 시트에 기록합니다.
-# 현재는 수동 실행(workflow_dispatch)만 활성화되어 있으며, 드라이런이 기본값입니다.
-# 결과 검증 후 아래 schedule 블록의 주석을 풀면 매일 자동 실행됩니다.
+# 매일 오전 9시 KST에 전날 신청자를 자동으로 기록합니다 (예약 실행은 항상 기록).
+# 수동 실행(workflow_dispatch)은 apply 체크 여부에 따라 드라이런 또는 기록됩니다.
 name: Sync GA Channels to Sheets
 
 on:
-  # schedule:
-  #   # 매일 오전 9시 KST (UTC 00시) - 전날 신청자 기준
-  #   - cron: "0 0 * * *"
+  schedule:
+    # 매일 오전 9시 KST (UTC 00시) - 전날 신청자 기준
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       start:

@@ -55,6 +55,9 @@ REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
 # 시트에 없을 수 있어서 없으면 건너뛰는 컬럼
 OPTIONAL_FIELDS = {"campaign"}
 
+# 이 날짜 이전 신청자는 기록하지 않음 (기존 시트 데이터 보호, 신규 신청분부터 반영)
+APPLY_START_DATE = dt.date(2026, 10, 29)
+
 # 기록에서 제외할 신청자 이름 (대행사 테스트 데이터)
 EXCLUDED_NAMES = {"김보현"}
 
@@ -353,6 +356,10 @@ def group_by_cohort(bq_client, start, end):
     grouped = defaultdict(list)
     day = start
     while day <= end:
+        if day < APPLY_START_DATE:
+            logger.info("%s는 반영 시작일(%s) 이전이라 건너뜀", day, APPLY_START_DATE)
+            day += dt.timedelta(days=1)
+            continue
         for row in fetch_matched_rows(bq_client, day):
             if row["name"].strip() in EXCLUDED_NAMES:
                 logger.info("테스트 데이터 제외: %s", row["name"])
