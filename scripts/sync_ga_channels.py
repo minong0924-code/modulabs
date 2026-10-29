@@ -153,7 +153,7 @@ def build_updates(sheet_values, header_row, matched_rows):
     col_index = {}
     for key, title in TARGET_HEADERS.items():
         if title not in headers:
-            raise ValueError(f"시트에 '{title}' 컬럼이 없습니다.")
+            raise ValueError(f"시트에 '{title}' 컬럼이 없습니다. {header_row}행 헤더: {headers}")
         col_index[key] = headers.index(title)
 
     # (이름, 날짜) → 시트 행 번호 목록 인덱스
@@ -254,18 +254,25 @@ def main():
             logger.warning("config에 없는 기수: %s %s기 (%d건)", course_id, semester, len(rows))
             continue
 
-        worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
-        updates, skipped = build_updates(worksheet.get_all_values(), cohort["header_row"], rows)
-        for reason in skipped:
-            logger.warning("[%s %s기] 건너뜀 - %s", course_id, semester, reason)
+        label = f"{course_id} {semester}기"
+        try:
+            worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
+            updates, skipped = build_updates(worksheet.get_all_values(), cohort["header_row"], rows)
+        except Exception:
+            # 한 시트의 문제가 다른 과정/기수 처리를 막지 않도록 건너뜀
+            logger.exception("[%s] 시트 처리 실패, 다음 기수로 넘어감", label)
+            continue
 
-        logger.info("[%s %s기] 매칭 %d건, 기록 대상 셀 %d개", course_id, semester, len(rows), len(updates))
+        for reason in skipped:
+            logger.warning("[%s] 건너뜀 - %s", label, reason)
+
+        logger.info("[%s] 매칭 %d건, 기록 대상 셀 %d개", label, len(rows), len(updates))
         for update in updates:
             logger.info("  %s → %s", update["range"], update["values"][0][0])
 
         if args.apply and updates:
             worksheet.batch_update(updates, value_input_option="RAW")
-            logger.info("[%s %s기] 시트 기록 완료", course_id, semester)
+            logger.info("[%s] 시트 기록 완료", label)
 
 
 if __name__ == "__main__":
