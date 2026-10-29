@@ -108,6 +108,9 @@ DATE_FORMATS = [
 # GA에서 값이 없을 때 쓰는 placeholder (시트에 기록하지 않음)
 GA_PLACEHOLDERS = {"(not set)", "(not provided)"}
 
+# GA가 유입 원본이 없을 때 캠페인에 붙이는 기본값 (캠페인 구분에 기록하지 않음)
+GA_DEFAULT_CAMPAIGNS = {"(direct)", "(referral)", "(organic)"}
+
 
 def get_credentials(scopes):
     """GCP_SERVICE_ACCOUNT_JSON 환경변수에서 서비스 계정 자격증명을 로드합니다.
@@ -176,6 +179,27 @@ def classify_channel(source, medium, campaign):
     return CHANNEL_BY_SOURCE_MEDIUM.get((source, medium)) or CHANNEL_BY_SOURCE_MEDIUM.get((source, None))
 
 
+def is_meta_ad(match):
+    """GA 값에 메타 광고 흔적이 있는지 확인합니다.
+
+    광고 ID(18자리 숫자), 'conversion_' 캠페인명, '_image/_video/_slide' 소재명 중 하나면 메타 광고로 봅니다.
+
+    Args:
+        match: BigQuery 매칭 결과 한 건
+
+    Returns:
+        메타 광고 흔적이 있으면 True
+    """
+    campaign = match["session_campaign"] or ""
+    content = match["session_content"] or ""
+    term = match["session_term"] or ""
+    return (
+        bool(re.fullmatch(r"\d{18}", term))
+        or campaign.startswith("conversion_")
+        or bool(re.search(r"_(image|video|slide)(_\d{6})?$", content, re.IGNORECASE))
+    )
+
+
 def shorten_name(value):
     """GA 소재명(content/term)에서 과정명, 날짜, 형식(image/video/slide)을 제거해 짧은 이름으로 만듭니다.
 
@@ -230,8 +254,12 @@ def campaign_for(channel, match):
         기록할 캠페인 문자열 (기록하지 않는 채널이면 빈 문자열)
     """
     if channel in ("메타", "구글 DA", "카카오 DA"):
+        campaign = match["session_campaign"] or ""
+        if campaign in GA_DEFAULT_CAMPAIGNS:
+            # GA가 붙인 기본값(유입 원본 없음)은 캠페인으로 기록하지 않음
+            return ""
         # 카카오 시트 캠페인명은 'Aiffel_' 접두어 없이 기록됨
-        return re.sub(r"^Aiffel_", "", match["session_campaign"] or "")
+        return re.sub(r"^Aiffel_", "", campaign)
     return ""
 
 
@@ -397,6 +425,9 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         name = match["name"].strip()
         date = parse_date(match["db_submitted_at"])
         channel = classify_channel(match["session_source"], match["session_medium"], match["session_campaign"])
+        if channel == "직접 지원" and is_meta_ad(match):
+            # GA가 출처를 놓쳤지만 메타 광고 흔적이 있으면 메타로 분류
+            channel = "메타"
         values = {
             "channel": channel or "",
             "material": material_for(channel, match),
@@ -439,6 +470,19 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
     return updates, skipped
 
 
+def is_test_applicant(name):
+    """테스트 신청자인지 확인합니다. 이름에 '테스트'가 들어가거나 제외 목록에 있으면 True입니다.
+
+    Args:
+        name: 신청자 이름
+
+    Returns:
+        테스트 신청자이면 True
+    """
+    name = (name or "").strip()
+    return "테스트" in name or name in EXCLUDED_NAMES
+
+
 def group_by_cohort(bq_client, start, end):
     """기간 내 매칭 결과를 (과정ID, 기수) 단위로 묶습니다.
 
@@ -458,7 +502,7 @@ def group_by_cohort(bq_client, start, end):
             day += dt.timedelta(days=1)
             continue
         for row in fetch_matched_rows(bq_client, day):
-            if row["name"].strip() in EXCLUDED_NAMES:
+            if is_test_applicant(row["name"]):
                 logger.info("테스트 데이터 제외: %s", row["name"])
                 continue
             course_id = COURSE_MAPPING.get(row["course"])
