@@ -1,0 +1,272 @@
+"""BigQuery 매칭 결과를 과정별 구글 시트 '2.2 일자별 신청현황'에 반영하는 스크립트.
+
+흐름:
+  1. sql/ga_applicant_match.sql을 날짜별로 실행해 내부 지원자 DB와 GA 유입 정보를 매칭
+  2. 과정/기수별 시트를 읽어 같은 날짜·같은 이름의 행을 찾음
+  3. 비어 있는 유입 채널/소재/캠페인 칸만 채움 (사람이 입력한 값은 덮어쓰지 않음)
+
+기본값은 드라이런(시트 변경 없음)입니다. --apply 를 붙여야 실제로 기록합니다.
+"""
+
+import argparse
+import datetime as dt
+import json
+import logging
+import os
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import gspread
+from google.cloud import bigquery
+from google.oauth2.service_account import Credentials
+from gspread.utils import rowcol_to_a1
+
+# src 패키지 import를 위해 프로젝트 루트를 경로에 추가
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config import COURSE_MAPPING, COURSES  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("sync_ga_channels")
+
+SQL_PATH = PROJECT_ROOT / "sql" / "ga_applicant_match.sql"
+BQ_PROJECT = "modulabs-ga-workspace"
+KST = dt.timezone(dt.timedelta(hours=9))
+
+BQ_SCOPES = ["https://www.googleapis.com/auth/bigquery"]
+# 시트 쓰기를 위해 읽기/쓰기 스코프 사용 (src/sheets_client.py의 읽기 전용 스코프와 별개)
+SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# 시트에서 사용하는 컬럼명 (config.COLUMN_MAPPING 값과 동일)
+TARGET_HEADERS = {
+    "date": "일자",
+    "name": "신청자 이름",
+    "channel": "유입 채널",
+    "material": "유입 소재 및 키워드",
+    "campaign": "캠페인 구분",
+}
+
+# 시트의 '일자' 셀 형식 후보 (실제 형식과 다르면 여기에 추가)
+DATE_FORMATS = [
+    "%Y-%m-%d",
+    "%Y.%m.%d",
+    "%Y/%m/%d",
+    "%Y. %m. %d.",
+    "%Y-%m-%d %H:%M:%S",
+]
+
+GA_NOT_SET = "(not set)"
+
+
+def get_credentials(scopes):
+    """GCP_SERVICE_ACCOUNT_JSON 환경변수에서 서비스 계정 자격증명을 로드합니다.
+
+    Args:
+        scopes: 요청할 OAuth 스코프 목록
+
+    Returns:
+        google.oauth2 Credentials 객체
+    """
+    raw = os.getenv("GCP_SERVICE_ACCOUNT_JSON")
+    if not raw:
+        raise RuntimeError("GCP_SERVICE_ACCOUNT_JSON 환경변수가 없습니다.")
+    return Credentials.from_service_account_info(json.loads(raw), scopes=scopes)
+
+
+def parse_date(value):
+    """문자열을 date로 변환합니다. 형식이 맞지 않으면 None을 반환합니다.
+
+    Args:
+        value: 시트 셀 또는 BigQuery 타임스탬프 문자열
+
+    Returns:
+        datetime.date 또는 None
+    """
+    text = str(value).strip()
+    for fmt in DATE_FORMATS:
+        try:
+            return dt.datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def cell(row, idx):
+    """행에서 idx 위치의 값을 공백 제거 후 반환합니다. 범위를 벗어나면 빈 문자열입니다.
+
+    Args:
+        row: 시트 한 행 (문자열 리스트)
+        idx: 0-based 컬럼 인덱스
+
+    Returns:
+        공백이 제거된 셀 값
+    """
+    return row[idx].strip() if idx < len(row) else ""
+
+
+def join_material(content, term):
+    """GA의 content/term 값을 '유입 소재 및 키워드' 한 칸 값으로 합칩니다.
+
+    Args:
+        content: GA 캠페인 소재(content) 값
+        term: GA 검색 키워드(term) 값
+
+    Returns:
+        '소재 / 키워드' 형식 문자열 (둘 다 없으면 빈 문자열)
+    """
+    parts = [p for p in (content, term) if p and p != GA_NOT_SET]
+    return " / ".join(parts)
+
+
+def fetch_matched_rows(bq_client, target_date):
+    """특정 날짜의 지원자-GA 매칭 결과를 BigQuery에서 가져옵니다.
+
+    Args:
+        bq_client: bigquery.Client 객체
+        target_date: 처리할 지원 일자 (datetime.date)
+
+    Returns:
+        매칭 결과 dict 목록
+    """
+    sql = SQL_PATH.read_text(encoding="utf-8")
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("target_date", "DATE", target_date)]
+    )
+    rows = bq_client.query(sql, job_config=job_config).result()
+    return [dict(row.items()) for row in rows]
+
+
+def build_updates(sheet_values, header_row, matched_rows):
+    """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
+
+    Args:
+        sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
+        header_row: 헤더 행 번호 (1-based)
+        matched_rows: 해당 과정/기수의 BigQuery 매칭 결과 목록
+
+    Returns:
+        (updates, skipped): gspread batch_update용 dict 목록, 건너뛴 사유 목록
+    """
+    headers = [h.strip() for h in sheet_values[header_row - 1]]
+    col_index = {}
+    for key, title in TARGET_HEADERS.items():
+        if title not in headers:
+            raise ValueError(f"시트에 '{title}' 컬럼이 없습니다.")
+        col_index[key] = headers.index(title)
+
+    # (이름, 날짜) → 시트 행 번호 목록 인덱스
+    sheet_index = defaultdict(list)
+    for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
+        name = cell(row, col_index["name"])
+        date = parse_date(cell(row, col_index["date"]))
+        if name and date:
+            sheet_index[(name, date)].append(row_no)
+
+    updates = []
+    skipped = []
+    for match in matched_rows:
+        name = match["name"].strip()
+        date = parse_date(match["db_submitted_at"])
+        row_nos = sheet_index.get((name, date), [])
+        if len(row_nos) != 1:
+            skipped.append(f"{name} {date}: 시트 매칭 {len(row_nos)}건")
+            continue
+
+        row_no = row_nos[0]
+        row = sheet_values[row_no - 1]
+        values = {
+            "channel": match["session_source"],
+            "material": join_material(match["session_content"], match["session_term"]),
+            "campaign": match["session_campaign"],
+        }
+        for field, value in values.items():
+            # 이미 값이 있으면 사람이 입력한 내용이므로 건드리지 않음
+            if not value or cell(row, col_index[field]):
+                continue
+            updates.append({
+                "range": rowcol_to_a1(row_no, col_index[field] + 1),
+                "values": [[value]],
+            })
+
+    return updates, skipped
+
+
+def group_by_cohort(bq_client, start, end):
+    """기간 내 매칭 결과를 (과정ID, 기수) 단위로 묶습니다.
+
+    Args:
+        bq_client: bigquery.Client 객체
+        start: 시작일 (datetime.date, 포함)
+        end: 종료일 (datetime.date, 포함)
+
+    Returns:
+        {(과정ID, 기수): 매칭 결과 목록} dict
+    """
+    grouped = defaultdict(list)
+    day = start
+    while day <= end:
+        for row in fetch_matched_rows(bq_client, day):
+            course_id = COURSE_MAPPING.get(row["course"])
+            if course_id is None:
+                logger.info("미매핑 과정 건너뜀: %s (%s)", row["course"], row["name"])
+                continue
+            grouped[(course_id, int(row["semester"]))].append(row)
+        logger.info("%s 매칭 조회 완료", day)
+        day += dt.timedelta(days=1)
+    return grouped
+
+
+def parse_cli_date(text):
+    """CLI 인자 YYYY-MM-DD를 date로 변환합니다.
+
+    Args:
+        text: 날짜 문자열
+
+    Returns:
+        datetime.date
+    """
+    return dt.datetime.strptime(text, "%Y-%m-%d").date()
+
+
+def main():
+    """CLI 진입점: 기간을 조회해 과정별 시트에 유입 정보를 기록합니다."""
+    parser = argparse.ArgumentParser(description="BigQuery 매칭 결과를 과정별 시트에 기록")
+    parser.add_argument("--start", type=parse_cli_date, help="시작일 YYYY-MM-DD (기본: 어제 KST)")
+    parser.add_argument("--end", type=parse_cli_date, help="종료일 YYYY-MM-DD (기본: 시작일)")
+    parser.add_argument("--apply", action="store_true", help="실제로 시트에 기록 (없으면 드라이런)")
+    args = parser.parse_args()
+
+    yesterday = dt.datetime.now(KST).date() - dt.timedelta(days=1)
+    start = args.start or yesterday
+    end = args.end or start
+    mode = "APPLY" if args.apply else "DRY-RUN"
+    logger.info("실행 모드: %s, 기간: %s ~ %s", mode, start, end)
+
+    bq_client = bigquery.Client(project=BQ_PROJECT, credentials=get_credentials(BQ_SCOPES))
+    gs_client = gspread.authorize(get_credentials(SHEETS_SCOPES))
+
+    grouped = group_by_cohort(bq_client, start, end)
+    for (course_id, semester), rows in sorted(grouped.items()):
+        cohort = COURSES.get(course_id, {}).get("cohorts", {}).get(semester)
+        if cohort is None:
+            logger.warning("config에 없는 기수: %s %s기 (%d건)", course_id, semester, len(rows))
+            continue
+
+        worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
+        updates, skipped = build_updates(worksheet.get_all_values(), cohort["header_row"], rows)
+        for reason in skipped:
+            logger.warning("[%s %s기] 건너뜀 - %s", course_id, semester, reason)
+
+        logger.info("[%s %s기] 매칭 %d건, 기록 대상 셀 %d개", course_id, semester, len(rows), len(updates))
+        for update in updates:
+            logger.info("  %s → %s", update["range"], update["values"][0][0])
+
+        if args.apply and updates:
+            worksheet.batch_update(updates, value_input_option="RAW")
+            logger.info("[%s %s기] 시트 기록 완료", course_id, semester)
+
+
+if __name__ == "__main__":
+    main()

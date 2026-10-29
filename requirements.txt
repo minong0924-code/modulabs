@@ -6,3 +6,4 @@ google-auth-httplib2
 pandas
 plotly
 python-dateutil
+google-cloud-bigquery

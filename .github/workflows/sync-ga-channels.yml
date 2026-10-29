@@ -1,0 +1,53 @@
+# BigQuery 지원자 매칭 결과를 과정별 시트에 기록합니다.
+# 현재는 수동 실행(workflow_dispatch)만 활성화되어 있으며, 드라이런이 기본값입니다.
+# 결과 검증 후 아래 schedule 블록의 주석을 풀면 매일 자동 실행됩니다.
+name: Sync GA Channels to Sheets
+
+on:
+  # schedule:
+  #   # 매일 오전 9시 KST (UTC 00시) - 전날 신청자 기준
+  #   - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "시작일 YYYY-MM-DD (비우면 어제 KST)"
+        required: false
+        default: ""
+      end:
+        description: "종료일 YYYY-MM-DD (비우면 시작일과 동일)"
+        required: false
+        default: ""
+      apply:
+        description: "체크하면 실제로 시트에 기록 (해제 시 드라이런)"
+        type: boolean
+        default: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 매칭 결과 시트 반영
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          START_DATE: ${{ inputs.start }}
+          END_DATE: ${{ inputs.end }}
+          # 스케줄 실행은 항상 기록(APPLY), 수동 실행은 체크박스 값을 따름
+          APPLY: ${{ inputs.apply || github.event_name == 'schedule' }}
+        run: |
+          ARGS=""
+          [ -n "$START_DATE" ] && ARGS="$ARGS --start $START_DATE"
+          [ -n "$END_DATE" ] && ARGS="$ARGS --end $END_DATE"
+          [ "$APPLY" = "true" ] && ARGS="$ARGS --apply"
+          python scripts/sync_ga_channels.py $ARGS
