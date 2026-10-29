@@ -48,6 +48,12 @@ TARGET_HEADERS = {
     "campaign": "캠페인 구분",
 }
 
+# 헤더 행 자동 탐지 시 반드시 있어야 하는 컬럼
+REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
+
+# 시트에 없을 수 있어서 없으면 건너뛰는 컬럼
+OPTIONAL_FIELDS = {"campaign"}
+
 # 시트의 '일자' 셀 형식 후보 (실제 형식과 다르면 여기에 추가)
 DATE_FORMATS = [
     "%Y-%m-%d",
@@ -138,6 +144,32 @@ def fetch_matched_rows(bq_client, target_date):
     return [dict(row.items()) for row in rows]
 
 
+def find_header_row(sheet_values, default_row):
+    """헤더 행을 찾습니다. 설정된 행에 필수 컬럼이 없으면 상단 15행에서 다시 찾습니다.
+
+    Args:
+        sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
+        default_row: config에 설정된 헤더 행 번호 (1-based)
+
+    Returns:
+        실제 헤더 행 번호 (1-based)
+    """
+    def has_required_headers(row_no):
+        """해당 행에 필수 헤더가 모두 있는지 확인합니다."""
+        if row_no > len(sheet_values):
+            return False
+        titles = [h.strip() for h in sheet_values[row_no - 1]]
+        return all(title in titles for title in REQUIRED_HEADER_TITLES)
+
+    if has_required_headers(default_row):
+        return default_row
+    for row_no in range(1, min(15, len(sheet_values)) + 1):
+        if has_required_headers(row_no):
+            logger.info("헤더 행 자동 탐지: %d행 (설정값 %d행)", row_no, default_row)
+            return row_no
+    raise ValueError(f"상단 15행에서 {REQUIRED_HEADER_TITLES} 헤더를 찾지 못했습니다.")
+
+
 def build_updates(sheet_values, header_row, matched_rows):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
 
@@ -149,12 +181,17 @@ def build_updates(sheet_values, header_row, matched_rows):
     Returns:
         (updates, skipped): gspread batch_update용 dict 목록, 건너뛴 사유 목록
     """
+    header_row = find_header_row(sheet_values, header_row)
     headers = [h.strip() for h in sheet_values[header_row - 1]]
     col_index = {}
     for key, title in TARGET_HEADERS.items():
-        if title not in headers:
+        if title in headers:
+            col_index[key] = headers.index(title)
+        elif key in OPTIONAL_FIELDS:
+            # 선택 컬럼이 없는 시트는 해당 칸만 기록하지 않음
+            logger.warning("'%s' 컬럼이 없어 이 칸은 기록하지 않습니다.", title)
+        else:
             raise ValueError(f"시트에 '{title}' 컬럼이 없습니다. {header_row}행 헤더: {headers}")
-        col_index[key] = headers.index(title)
 
     # (이름, 날짜) → 시트 행 번호 목록 인덱스
     sheet_index = defaultdict(list)
@@ -182,8 +219,8 @@ def build_updates(sheet_values, header_row, matched_rows):
             "campaign": match["session_campaign"],
         }
         for field, value in values.items():
-            # 이미 값이 있으면 사람이 입력한 내용이므로 건드리지 않음
-            if not value or cell(row, col_index[field]):
+            # 컬럼이 없거나 이미 값이 있으면 건드리지 않음 (사람이 입력한 내용 보호)
+            if field not in col_index or not value or cell(row, col_index[field]):
                 continue
             updates.append({
                 "range": rowcol_to_a1(row_no, col_index[field] + 1),
