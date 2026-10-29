@@ -3,9 +3,10 @@
 
 WITH internal_db AS (
   SELECT
-    CAST(submitted_at AS TIMESTAMP) AS submitted_ts_kst,
-    TIMESTAMP_SUB(CAST(submitted_at AS TIMESTAMP), INTERVAL 9 HOUR) AS submitted_ts_utc,
-    FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', CAST(submitted_at AS TIMESTAMP)) AS submitted_at_seoul,
+    -- submitted_at은 UTC 기준 시각 (GA 이벤트 시각과 비교할 때 그대로 사용)
+    CAST(submitted_at AS TIMESTAMP) AS submitted_ts_utc,
+    -- 날짜는 한국 시간 기준 (GA 일별 테이블도 한국 시간 기준으로 나뉨)
+    FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', CAST(submitted_at AS TIMESTAMP), 'Asia/Seoul') AS submitted_at_seoul,
     uuid,
     name,
     apply_id,
@@ -14,7 +15,7 @@ WITH internal_db AS (
     applicant_birth
   FROM `modulabs-ga-workspace.Modulabs_internal_DB.KDT_Daily_Apply`
   WHERE name IS NOT NULL
-    AND DATE(CAST(submitted_at AS TIMESTAMP)) = @target_date
+    AND DATE(CAST(submitted_at AS TIMESTAMP), 'Asia/Seoul') = @target_date
     AND course IN ('AI-AGENT','AI-DATA','PRIVATE-AI','RESEARCH','EGIGAE','EDATA','ELLM','ENGR')
 ),
 all_traffic_info AS (
