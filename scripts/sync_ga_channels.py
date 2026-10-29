@@ -54,6 +54,12 @@ REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
 # 시트에 없을 수 있어서 없으면 건너뛰는 컬럼
 OPTIONAL_FIELDS = {"campaign"}
 
+# 기록에서 제외할 신청자 이름 (대행사 테스트 데이터)
+EXCLUDED_NAMES = {"김보현"}
+
+# 재직자 과정은 캠페인 구분을 기록하지 않음
+EMPLOYED_SKIP_FIELDS = {"campaign"}
+
 # 시트의 '일자' 셀 형식 후보 (실제 형식과 다르면 여기에 추가)
 DATE_FORMATS = [
     "%Y-%m-%d",
@@ -170,13 +176,14 @@ def find_header_row(sheet_values, default_row):
     raise ValueError(f"상단 15행에서 {REQUIRED_HEADER_TITLES} 헤더를 찾지 못했습니다.")
 
 
-def build_updates(sheet_values, header_row, matched_rows):
+def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset()):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
 
     Args:
         sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
         header_row: 헤더 행 번호 (1-based)
         matched_rows: 해당 과정/기수의 BigQuery 매칭 결과 목록
+        skip_fields: 기록하지 않을 필드 집합 (예: 재직자 과정의 campaign)
 
     Returns:
         (updates, skipped): gspread batch_update용 dict 목록, 건너뛴 사유 목록
@@ -185,6 +192,8 @@ def build_updates(sheet_values, header_row, matched_rows):
     headers = [h.strip() for h in sheet_values[header_row - 1]]
     col_index = {}
     for key, title in TARGET_HEADERS.items():
+        if key in skip_fields:
+            continue
         if title in headers:
             col_index[key] = headers.index(title)
         elif key in OPTIONAL_FIELDS:
@@ -245,6 +254,9 @@ def group_by_cohort(bq_client, start, end):
     day = start
     while day <= end:
         for row in fetch_matched_rows(bq_client, day):
+            if row["name"].strip() in EXCLUDED_NAMES:
+                logger.info("테스트 데이터 제외: %s", row["name"])
+                continue
             course_id = COURSE_MAPPING.get(row["course"])
             if course_id is None:
                 logger.info("미매핑 과정 건너뜀: %s (%s)", row["course"], row["name"])
@@ -294,7 +306,11 @@ def main():
         label = f"{course_id} {semester}기"
         try:
             worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
-            updates, skipped = build_updates(worksheet.get_all_values(), cohort["header_row"], rows)
+            is_employed = COURSES[course_id]["type"] == "employed"
+            skip_fields = EMPLOYED_SKIP_FIELDS if is_employed else frozenset()
+            updates, skipped = build_updates(
+                worksheet.get_all_values(), cohort["header_row"], rows, skip_fields
+            )
         except Exception:
             # 한 시트의 문제가 다른 과정/기수 처리를 막지 않도록 건너뜀
             logger.exception("[%s] 시트 처리 실패, 다음 기수로 넘어감", label)
