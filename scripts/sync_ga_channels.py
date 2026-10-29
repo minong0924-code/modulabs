@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -59,6 +60,37 @@ EXCLUDED_NAMES = {"김보현"}
 
 # 재직자 과정은 캠페인 구분을 기록하지 않음
 EMPLOYED_SKIP_FIELDS = {"campaign"}
+
+# GA (source, medium) → 시트 유입 채널 (기존 시트 입력값과 대조해 학습한 결과)
+# medium이 None이면 해당 source의 모든 medium에 적용
+CHANNEL_BY_SOURCE_MEDIUM = {
+    ("meta", "da"): "메타",
+    ("kakao", "cpc"): "카카오 DA",
+    ("naver", "bsa_pc"): "네이버 브검",
+    ("naver", "bsa_mo"): "네이버 브검",
+    ("naver", "cpc"): "네이버 SA",
+    ("google", "organic"): "구글 검색",
+    ("naver", "organic"): "네이버 검색",
+    ("m.search.naver.com", "referral"): "네이버 검색",
+    ("direct", "(none)"): "직접 지원",
+    ("(direct)", "(none)"): "직접 지원",
+    ("kauth.kakao.com", "referral"): "직접 지원",
+    ("apply.aiffel.io", "referral"): "직접 지원",
+    ("community", "board_all"): "커뮤니티/버티컬",
+    ("chatgpt.com", None): "LLM(GPT, 퍼플렉시티 등)",
+    ("kakao", "list_plus_friends"): "카카오 플러스친구",
+    ("kakao", "mail_plus_friends"): "카카오 플러스친구",
+    ("kakao", "message_plus_friends"): "카카오 플러스친구",
+    ("stibee", None): "모두/광고레터",
+    ("solapi", None): "마수동 문자",
+    ("youtube", "shorts_all"): "기타(유가)",
+    ("instagram", "shorts_all"): "기타(유가)",
+    ("instagram", "board_all"): "기타(유가)",
+    ("naver", "blog_all"): "기타(유가)",
+    ("etc", "board_all"): "HRD Net",
+    ("goyong24", "referral"): "HRD Net",
+    ("work24.go.kr", "referral"): "HRD Net",
+}
 
 # 시트의 '일자' 셀 형식 후보 (실제 형식과 다르면 여기에 추가)
 DATE_FORMATS = [
@@ -119,18 +151,84 @@ def cell(row, idx):
     return row[idx].strip() if idx < len(row) else ""
 
 
-def join_material(content, term):
-    """GA의 content/term 값을 '유입 소재 및 키워드' 한 칸 값으로 합칩니다.
+def classify_channel(source, medium, campaign):
+    """GA 유입 정보로 시트의 '유입 채널' 이름을 정합니다. 판단할 수 없으면 None.
 
     Args:
-        content: GA 캠페인 소재(content) 값
-        term: GA 검색 키워드(term) 값
+        source: GA session_source 값
+        medium: GA session_medium 값
+        campaign: GA session_campaign 값 (구글 DA/SA 구분에 사용)
 
     Returns:
-        '소재 / 키워드' 형식 문자열 (둘 다 없으면 빈 문자열)
+        유입 채널 이름 또는 None
     """
-    parts = [p for p in (content, term) if p and p not in GA_PLACEHOLDERS]
-    return " / ".join(parts)
+    if (source, medium) == ("google", "cpc"):
+        # 구글 광고는 캠페인명으로 DA와 검색광고(SA)를 구분
+        if re.search(r"pmax|dgen", campaign or "", re.IGNORECASE):
+            return "구글 DA"
+        if re.search(r"(^|_)sa($|_)", campaign or "", re.IGNORECASE):
+            return "구글 SA"
+        return None
+    return CHANNEL_BY_SOURCE_MEDIUM.get((source, medium)) or CHANNEL_BY_SOURCE_MEDIUM.get((source, None))
+
+
+def shorten_name(value):
+    """GA 소재명(content/term)에서 과정명, 날짜, 형식(image/video/slide)을 제거해 짧은 이름으로 만듭니다.
+
+    예: 'aiagent_jeju1_image_260609' → 'jeju1'
+
+    Args:
+        value: GA 소재명 값
+
+    Returns:
+        줄인 소재명
+    """
+    parts = [p for p in (value or "").split("_") if p]
+    if len(parts) >= 3:
+        parts = parts[1:]
+    if parts and re.fullmatch(r"\d{6}", parts[-1]):
+        parts = parts[:-1]
+    if len(parts) >= 2 and parts[-1].lower() in ("image", "video", "slide"):
+        parts = parts[:-1]
+    return "_".join(parts)
+
+
+def material_for(channel, match):
+    """유입 채널에 맞는 '유입 소재 및 키워드' 값을 정합니다.
+
+    Args:
+        channel: 분류된 유입 채널 이름
+        match: BigQuery 매칭 결과 한 건
+
+    Returns:
+        기록할 소재/키워드 문자열 (기록하지 않는 채널이면 빈 문자열)
+    """
+    if channel == "메타":
+        return shorten_name(match["session_content"])
+    if channel == "카카오 DA":
+        return shorten_name(match["session_term"])
+    if channel in ("네이버 브검", "구글 SA"):
+        return match["session_term"]
+    if channel == "네이버 SA":
+        # 네이버 SA의 키워드 뒤에 붙는 광고 ID(_nad-…)는 제외
+        return match["session_term"].split("_nad-")[0]
+    return ""
+
+
+def campaign_for(channel, match):
+    """유입 채널에 맞는 '캠페인 구분' 값을 정합니다.
+
+    Args:
+        channel: 분류된 유입 채널 이름
+        match: BigQuery 매칭 결과 한 건
+
+    Returns:
+        기록할 캠페인 문자열 (기록하지 않는 채널이면 빈 문자열)
+    """
+    if channel in ("메타", "구글 DA", "카카오 DA"):
+        # 카카오 시트 캠페인명은 'Aiffel_' 접두어 없이 기록됨
+        return re.sub(r"^Aiffel_", "", match["session_campaign"] or "")
+    return ""
 
 
 def fetch_matched_rows(bq_client, target_date):
@@ -223,10 +321,11 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
 
         row_no = row_nos[0]
         row = sheet_values[row_no - 1]
+        channel = classify_channel(match["session_source"], match["session_medium"], match["session_campaign"])
         values = {
-            "channel": match["session_source"],
-            "material": join_material(match["session_content"], match["session_term"]),
-            "campaign": match["session_campaign"],
+            "channel": channel or "",
+            "material": material_for(channel, match),
+            "campaign": campaign_for(channel, match),
         }
         for field, value in values.items():
             # 컬럼이 없거나 이미 값이 있으면 건드리지 않음 (사람이 입력한 내용 보호)
