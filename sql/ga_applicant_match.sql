@@ -10,7 +10,8 @@ WITH internal_db AS (
     name,
     apply_id,
     course,
-    semester
+    semester,
+    applicant_birth
   FROM `modulabs-ga-workspace.Modulabs_internal_DB.KDT_Daily_Apply`
   WHERE name IS NOT NULL
     AND DATE(CAST(submitted_at AS TIMESTAMP)) = @target_date
@@ -82,6 +83,7 @@ SELECT
     db.name,
     db.course,
     db.semester,
+    db.applicant_birth,
     COALESCE(t.first_source, 'direct') AS session_source,
     COALESCE(t.first_medium, '(none)') AS session_medium,
     COALESCE(t.first_campaign, '(not set)') AS session_campaign,

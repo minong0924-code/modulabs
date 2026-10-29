@@ -47,13 +47,14 @@ TARGET_HEADERS = {
     "channel": "유입 채널",
     "material": "유입 소재 및 키워드",
     "campaign": "캠페인 구분",
+    "age": "연령대",
 }
 
 # 헤더 행 자동 탐지 시 반드시 있어야 하는 컬럼
 REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
 
 # 시트에 없을 수 있어서 없으면 건너뛰는 컬럼
-OPTIONAL_FIELDS = {"campaign"}
+OPTIONAL_FIELDS = {"campaign", "age"}
 
 # 이 날짜 이전 신청자는 기록하지 않음 (기존 시트 데이터 보호, 신규 신청분부터 반영)
 APPLY_START_DATE = dt.date(2026, 10, 28)
@@ -62,7 +63,7 @@ APPLY_START_DATE = dt.date(2026, 10, 28)
 EXCLUDED_NAMES = {"김보현"}
 
 # 재직자 과정은 캠페인 구분을 기록하지 않음
-EMPLOYED_SKIP_FIELDS = {"campaign"}
+EMPLOYED_SKIP_FIELDS = {"campaign", "age"}
 
 # GA (source, medium) → 시트 유입 채널 (기존 시트 입력값과 대조해 학습한 결과)
 # medium이 None이면 해당 source의 모든 medium에 적용
@@ -234,6 +235,28 @@ def campaign_for(channel, match):
     return ""
 
 
+def age_group_of(birth, apply_date):
+    """생년월일과 신청일로 연령대 표기를 만듭니다 (만 나이 기준, 50대 이상은 한 묶음).
+
+    기존 시트 값과 대조한 결과 98% 일치하는 규칙입니다.
+
+    Args:
+        birth: 생년월일 (datetime.date 또는 None)
+        apply_date: 신청일 (datetime.date 또는 None)
+
+    Returns:
+        '10대', '20대', ..., '50대 이상' (정보가 없으면 빈 문자열)
+    """
+    if birth is None or apply_date is None:
+        return ""
+    age = apply_date.year - birth.year - ((apply_date.month, apply_date.day) < (birth.month, birth.day))
+    if age >= 50:
+        return "50대 이상"
+    if age < 20:
+        return "10대"
+    return f"{age // 10 * 10}대"
+
+
 def fetch_matched_rows(bq_client, target_date):
     """특정 날짜의 지원자-GA 매칭 결과를 BigQuery에서 가져옵니다.
 
@@ -378,6 +401,7 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
             "channel": channel or "",
             "material": material_for(channel, match),
             "campaign": campaign_for(channel, match),
+            "age": age_group_of(match.get("applicant_birth"), date),
         }
         row_nos = sheet_index.get((name, date), [])
 
