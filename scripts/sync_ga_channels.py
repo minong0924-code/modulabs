@@ -60,7 +60,7 @@ OPTIONAL_FIELDS = {"campaign", "age"}
 APPLY_START_DATE = dt.date(2026, 10, 28)
 
 # 기록에서 제외할 신청자 이름 (대행사 테스트 데이터)
-EXCLUDED_NAMES = {"김보현"}
+EXCLUDED_NAMES = {"김보현", "고유진"}
 
 # 재직자 과정은 캠페인 구분을 기록하지 않음
 EMPLOYED_SKIP_FIELDS = {"campaign", "age"}
