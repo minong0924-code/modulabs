@@ -249,7 +249,8 @@ def shorten_name(value):
 
 
 # 과정별 GA 캠페인명에 들어가는 식별 문자열 (소문자 기준)
-# 여기에 없는 캠페인(예: b2b_education)은 과정을 특정하지 않아 비고를 쓰지 않음
+# 여기에 없는 캠페인은 과정을 특정하지 않아 비고를 쓰지 않음 (B2B 캠페인은 별도 처리)
+B2B_CAMPAIGN_KEYWORD = "b2b_education"
 COURSE_CAMPAIGN_KEYWORDS = {
     "ai_researcher": ("airesearcher", "alresearcher"),
     "data_analysis": ("edata",),
@@ -520,7 +521,10 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
             channel = "메타"
         origin = course_of_campaign(match["session_campaign"])
         note = ""
-        if origin and course_id and origin != course_id:
+        if B2B_CAMPAIGN_KEYWORD in (match["session_campaign"] or "").lower():
+            # B2B 캠페인은 특정 과정이 아니므로 별도 표기
+            note = "B2B 캠페인으로 유입"
+        elif origin and course_id and origin != course_id:
             # 다른 과정 캠페인으로 들어온 신청자는 비고에 출처 과정을 적음
             note = f"{COURSES[origin]['name']} 캠페인으로 유입"
         values = {
