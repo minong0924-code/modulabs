@@ -444,8 +444,9 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         auto_log: {(이름, 신청일, 항목): 마지막 자동 기록 값} dict
 
     Returns:
-        (updates, skipped, written): gspread batch_update용 dict 목록, 건너뛴 사유 목록,
-        자동 기록 로그에 남길 항목 목록
+        (updates, skipped, written, format_src, appended_rows): gspread batch_update용 dict 목록,
+        건너뛴 사유 목록, 자동 기록 로그에 남길 항목 목록, 서식을 복사할 기존 마지막 행 번호,
+        새로 추가할 행 번호 목록
     """
     auto_log = auto_log or {}
     header_row = find_header_row(sheet_values, header_row)
@@ -471,13 +472,15 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
             sheet_index[(name, date)].append(row_no)
 
     # 신규 신청자는 데이터 맨 아래 다음 행에 추가 (일자 표기는 기존 행 형식과 맞춤)
-    next_row = last_data_row(sheet_values, header_row, col_index) + 1
+    format_src = last_data_row(sheet_values, header_row, col_index)
+    next_row = format_src + 1
     date_sep = date_separator_of(sheet_values, header_row, col_index)
 
     updates = []
     skipped = []
     written = []
     appended = set()
+    appended_rows = []
     for match in matched_rows:
         name = match["name"].strip()
         date = parse_date(match["db_submitted_at"])
@@ -511,6 +514,7 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 if field in GA_FIELDS:
                     written.append({"name": name, "apply_date": date, "field": field, "value": value})
             logger.info("신규 행 추가: %d행 %s %s (채널: %s)", next_row, date, name, channel or "미분류")
+            appended_rows.append(next_row)
             next_row += 1
             continue
 
@@ -540,7 +544,44 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 "values": [[value]],
             })
 
-    return updates, skipped, written
+    return updates, skipped, written, format_src, appended_rows
+
+
+def copy_row_formats(worksheet, src_row, dst_rows):
+    """기존 데이터 행의 서식과 드롭다운(데이터 유효성)을 새로 추가한 행에 복사합니다.
+
+    새 행에는 유입 채널 드롭다운이 없어 칩 서식이 적용되지 않으므로, 바로 위 기존 행의 서식을 그대로 가져옵니다.
+
+    Args:
+        worksheet: gspread Worksheet 객체
+        src_row: 서식을 가져올 기존 행 번호 (1-based)
+        dst_rows: 서식을 적용할 행 번호 목록 (1-based)
+    """
+    if not dst_rows:
+        return
+    requests = []
+    for dst_row in dst_rows:
+        for paste_type in ("PASTE_FORMAT", "PASTE_DATA_VALIDATION"):
+            requests.append({
+                "copyPaste": {
+                    "source": {
+                        "sheetId": worksheet.id,
+                        "startRowIndex": src_row - 1,
+                        "endRowIndex": src_row,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": worksheet.col_count,
+                    },
+                    "destination": {
+                        "sheetId": worksheet.id,
+                        "startRowIndex": dst_row - 1,
+                        "endRowIndex": dst_row,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": worksheet.col_count,
+                    },
+                    "pasteType": paste_type,
+                }
+            })
+    worksheet.spreadsheet.batch_update({"requests": requests})
 
 
 def is_test_applicant(name):
@@ -725,7 +766,7 @@ def main():
             worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
             is_employed = COURSES[course_id]["type"] == "employed"
             skip_fields = EMPLOYED_SKIP_FIELDS if is_employed else frozenset()
-            updates, skipped, written = build_updates(
+            updates, skipped, written, format_src, appended_rows = build_updates(
                 worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log
             )
         except Exception:
@@ -742,6 +783,7 @@ def main():
 
         if args.apply and updates:
             worksheet.batch_update(updates, value_input_option="RAW")
+            copy_row_formats(worksheet, format_src, appended_rows)
             logger.info("[%s] 시트 기록 완료", label)
             append_auto_log(bq_client, course_id, semester, written)
 
