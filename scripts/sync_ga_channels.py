@@ -51,13 +51,14 @@ TARGET_HEADERS = {
     "material": "유입 소재 및 키워드",
     "campaign": "캠페인 구분",
     "age": "연령대",
+    "note": "비고",
 }
 
 # 헤더 행 자동 탐지 시 반드시 있어야 하는 컬럼
 REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
 
 # 시트에 없을 수 있어서 없으면 건너뛰는 컬럼
-OPTIONAL_FIELDS = {"campaign", "age"}
+OPTIONAL_FIELDS = {"campaign", "age", "note"}
 
 # 이 날짜 이전 신청자는 기록하지 않음 (기존 시트 데이터 보호, 신규 신청분부터 반영)
 APPLY_START_DATE = dt.date(2026, 10, 28)
@@ -72,7 +73,7 @@ REFRESHABLE_FIELDS = {"channel", "material", "campaign"}
 
 # 기본 정보는 GA와 무관하게 기록, 유입 정보는 GA 데이터가 준비된 날짜만 기록
 BASE_FIELDS = {"date", "name", "age"}
-GA_FIELDS = {"channel", "material", "campaign"}
+GA_FIELDS = {"channel", "material", "campaign", "note"}
 
 # 자동으로 기록한 유입 정보 내역 (다음 실행에서 자동 입력값인지 판단하는 데 사용)
 LOG_TABLE_ID = f"{BQ_PROJECT}.Modulabs_internal_DB.sheet_auto_log"
@@ -245,6 +246,33 @@ def shorten_name(value):
     if len(parts) >= 2 and parts[-1].lower() in ("image", "video", "slide"):
         parts = parts[:-1]
     return "_".join(parts)
+
+
+# 과정별 GA 캠페인명에 들어가는 식별 문자열 (소문자 기준)
+# 여기에 없는 캠페인(예: b2b_education)은 과정을 특정하지 않아 비고를 쓰지 않음
+COURSE_CAMPAIGN_KEYWORDS = {
+    "ai_researcher": ("airesearcher", "alresearcher"),
+    "data_analysis": ("edata",),
+    "ai_agent": ("aiagent",),
+    "private_ai": ("privateai",),
+    "ai_data_intel": ("aiintelligence",),
+}
+
+
+def course_of_campaign(campaign):
+    """GA 캠페인명으로 어느 과정의 캠페인인지 찾습니다.
+
+    Args:
+        campaign: GA session_campaign 값
+
+    Returns:
+        과정 ID 문자열 (찾지 못하면 None)
+    """
+    text = (campaign or "").lower()
+    for course_id, keywords in COURSE_CAMPAIGN_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return course_id
+    return None
 
 
 def material_for(channel, match):
@@ -433,7 +461,7 @@ def can_write_ga(current, value, field, refresh, last_auto):
     return last_auto is not None and current == last_auto
 
 
-def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None):
+def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None, course_id=None):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
 
     Args:
@@ -442,6 +470,7 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         matched_rows: 해당 과정/기수의 BigQuery 매칭 결과 목록 (_ga_ready 표시 포함)
         skip_fields: 기록하지 않을 필드 집합 (예: 재직자 과정의 campaign)
         auto_log: {(이름, 신청일, 항목): 마지막 자동 기록 값} dict
+        course_id: 이 시트가 속한 과정 ID (다른 과정 캠페인 유입 여부 판단에 사용)
 
     Returns:
         (updates, skipped, written, format_src, appended_rows): gspread batch_update용 dict 목록,
@@ -489,11 +518,17 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         if channel == "직접 지원" and is_meta_ad(match):
             # GA가 출처를 놓쳤지만 메타 광고 흔적이 있으면 메타로 분류
             channel = "메타"
+        origin = course_of_campaign(match["session_campaign"])
+        note = ""
+        if origin and course_id and origin != course_id:
+            # 다른 과정 캠페인으로 들어온 신청자는 비고에 출처 과정을 적음
+            note = f"{COURSES[origin]['name']} 캠페인으로 유입"
         values = {
             "channel": channel or "",
             "material": material_for(channel, match),
             "campaign": campaign_for(channel, match),
             "age": age_group_of(match.get("applicant_birth"), date),
+            "note": note,
         }
         row_nos = sheet_index.get((name, date), [])
 
@@ -767,7 +802,7 @@ def main():
             is_employed = COURSES[course_id]["type"] == "employed"
             skip_fields = EMPLOYED_SKIP_FIELDS if is_employed else frozenset()
             updates, skipped, written, format_src, appended_rows = build_updates(
-                worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log
+                worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log, course_id
             )
         except Exception:
             # 한 시트의 문제가 다른 과정/기수 처리를 막지 않도록 건너뜀
