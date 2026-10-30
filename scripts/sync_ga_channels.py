@@ -198,7 +198,8 @@ def classify_channel(source, medium, campaign):
         # 구글 광고는 캠페인명으로 DA와 검색광고(SA)를 구분
         if re.search(r"pmax|dgen", campaign or "", re.IGNORECASE):
             return "구글 DA"
-        if re.search(r"(^|_)sa($|_)", campaign or "", re.IGNORECASE):
+        # B2B 교육 캠페인(b2b_education_*)은 검색 광고(SA)로 분류
+        if re.search(r"(^|_)sa($|_)|b2b_education", campaign or "", re.IGNORECASE):
             return "구글 SA"
         return None
     return CHANNEL_BY_SOURCE_MEDIUM.get((source, medium)) or CHANNEL_BY_SOURCE_MEDIUM.get((source, None))
