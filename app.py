@@ -530,13 +530,14 @@ def render_media():
     if doc_reasons.empty:
         st.info("서류 불합격 기록이 없습니다.")
     else:
-        # 매체별로 서류 불합격 인원과 사유별 인원(많은 순)을 한 줄로 정리합니다
-        rows = [
-            {"매체그룹": group, "서류 불합격": int(part["인원"].sum()),
-             "사유별 인원": ", ".join(f"{row['사유']} {int(row['인원'])}명" for _, row in part.iterrows())}
-            for group, part in doc_reasons.groupby("매체그룹", sort=False)
-        ]
-        show_table(pd.DataFrame(rows).sort_values("서류 불합격", ascending=False), use_container_width=True, hide_index=True)
+        # 행은 매체, 열은 사유로 피벗합니다. 사유 열은 전체 인원이 많은 순, 서류 불합격 합계 열을 맨 앞에 둡니다
+        pivot = doc_reasons.pivot_table(index="매체그룹", columns="사유", values="인원", aggfunc="sum", fill_value=0)
+        reason_order = doc_reasons.groupby("사유")["인원"].sum().sort_values(ascending=False).index.tolist()
+        pivot = pivot[reason_order]
+        pivot.insert(0, "서류 불합격", pivot.sum(axis=1))
+        pivot = pivot.sort_values("서류 불합격", ascending=False).reset_index()
+        pivot.columns.name = None
+        show_table(pivot, use_container_width=True, hide_index=True)
 
     st.markdown("#### 🎨 메타 소재별 현황 (2.2 시트 기준, 광고비 연결 없음)")
     meta = scope_apps[scope_apps["매체그룹"] == "메타"]
