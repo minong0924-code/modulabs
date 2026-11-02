@@ -524,6 +524,48 @@ class SmallSampleGuidanceTest(unittest.TestCase):
         self.assertTrue(any("10건" in item for item in items))
 
 
+class WeeklyNarrativeTest(unittest.TestCase):
+    """주차 요약: 전체 광고비, 매체별 유입·전환 차이, 제안 액션"""
+
+    def test_summary_mentions_total_spend_and_differences(self):
+        rows = []
+        for ch, date, n in [("메타", "2026-10-26", 6), ("메타", "2026-10-28", 6), ("구글 SA", "2026-10-27", 2)]:
+            for i in range(n):
+                rows.append({"신청자 이름": f"{ch}{date}{i}", "일자": date, "유입 채널": ch, "서류 합격": "O"})
+        apps = m.prepare_applicants(pd.DataFrame(rows))
+        dates = pd.date_range("2026-10-20", "2026-11-02")
+        wide = pd.concat([pd.DataFrame({"date": dates, "block": b, "비용": 50_000.0 if b == "메타" else 20_000.0,
+                                        "클릭": 300 if b == "메타" else 40, "노출": 1000, "페이지뷰": 1,
+                                        "CTA 클릭": 1, "지원서 랜딩": 1, "지원서 제출": 0})
+                          for b in ["메타", "구글 SA"]])
+        r = m.weekly_narrative(apps, wide, "2026-10-26", "2026-11-01", "2026-10-19", "2026-10-25", min_sample=10)
+        self.assertIn("전체 광고비", r["headline"])
+        self.assertEqual(len(r["spend_lines"]), 2)
+        self.assertTrue(any("클릭당" in line for line in r["difference_lines"]))
+        self.assertTrue(r["actions"])
+
+
+class MediaFunnelActionTest(unittest.TestCase):
+    """지원 수와 무관하게 광고 지표 기준으로 액션을 제안한다"""
+
+    def test_cpc_rise_and_low_landing_stage_are_suggested(self):
+        dates = pd.date_range("2026-10-25", "2026-10-31")
+        rows = []
+        for d in dates:
+            prev = d <= pd.Timestamp("2026-10-27")
+            rows.append({"date": d, "block": "메타", "비용": 10_000.0 if prev else 20_000.0,
+                         "노출": 10_000, "클릭": 100, "페이지뷰": 80, "CTA 클릭": 40,
+                         "지원서 랜딩": 20, "지원서 제출": 5})
+            rows.append({"date": d, "block": "구글 SA", "비용": 10_000.0, "노출": 10_000, "클릭": 100,
+                         "페이지뷰": 80, "CTA 클릭": 40, "지원서 랜딩": 20, "지원서 제출": 10})
+        wide = pd.DataFrame(rows)
+        actions = m.media_funnel_actions(wide, "2026-10-29", "2026-10-31", "2026-10-26", "2026-10-28", min_clicks=30)
+        text = " ".join(actions)
+        self.assertIn("메타: 클릭당 비용", text)
+        self.assertIn("메타: 지원서 랜딩→제출 전환", text)
+        self.assertNotIn("구글 SA", text)
+
+
 if __name__ == "__main__":
     unittest.main()
 

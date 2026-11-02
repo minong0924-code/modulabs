@@ -62,6 +62,8 @@ from src.metrics import (
     channel_quality_table,
     recommended_actions,
     small_sample_checklist,
+    media_funnel_actions,
+    weekly_narrative,
     compare_group_tables,
     group_period_table,
     missing_channel_rate,
@@ -673,6 +675,20 @@ def render_weekly():
             view[column] = view[column].map(fmt_change)
         show_table(view.round(1), use_container_width=True, hide_index=True)
 
+    st.markdown("#### 🧭 이번 주 요약과 제안 액션")
+    narrative = weekly_narrative(apps, wide, cur_start, cur_end, prev_start, prev_end, MIN_SAMPLE_FOR_INSIGHT)
+    with st.container(border=True):
+        st.markdown(f"**총평** {narrative['headline']}")
+        if narrative["spend_lines"]:
+            st.markdown("**매체별 광고비·유입·전환**")
+            for line in narrative["spend_lines"]:
+                st.markdown(f"- {line}")
+        for line in narrative["difference_lines"]:
+            st.markdown(f"- {line}")
+        st.markdown("**이번 주 제안 액션**")
+        for action in narrative["actions"]:
+            st.markdown(f"- {action}")
+
     week_apps = counted(apps, cur_start, cur_end)
     week_apps = week_apps[week_apps["매체그룹"].isin(selected_media)] if selected_media else week_apps.iloc[0:0]
     st.markdown("#### 🧑‍💼 선택 주에 지원한 사람들의 현재 전형 결과 (지원일 기준)")
@@ -700,32 +716,6 @@ def render_weekly():
         else:
             show_table(reasons.round(1), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 💡 근거 기반 인사이트 (직전 주 대비)")
-    current_insight = {
-        "label": "직전 주" if periods["complete"] else "직전 같은 기간",
-        "cost": cur_tbl.set_index("매체")["광고비"] if not cur_tbl.empty else pd.Series(dtype=float),
-        "applicants": cur_tbl.set_index("매체")["지원"] if not cur_tbl.empty else pd.Series(dtype=float),
-        "reason_by_group": reason_concentration(week_apps) if not week_apps.empty else {},
-        "complete": periods["complete"],
-        "data_latest": pd.Timestamp(data_latest),
-    }
-    previous_insight = {
-        "label": "직전 주",
-        "cost": prev_tbl.set_index("매체")["광고비"] if not prev_tbl.empty else pd.Series(dtype=float),
-        "applicants": prev_tbl.set_index("매체")["지원"] if not prev_tbl.empty else pd.Series(dtype=float),
-    }
-    if week_apps.empty:
-        current_insight["in_progress_rate"] = None
-    else:
-        week_summary = summarize_applicants(week_apps)
-        current_insight["in_progress_rate"] = week_summary["진행중"] / week_summary["지원"]
-        current_insight["in_progress"] = week_summary["진행중"]
-        current_insight["applicants_total"] = week_summary["지원"]
-    missing_count, missing_rate = missing_channel_rate(week_apps)
-    current_insight["missing_rate"] = None if pd.isna(missing_rate) else missing_rate
-    current_insight["missing_count"] = missing_count
-    current_insight.setdefault("applicants_total", len(week_apps))
-    render_insights(build_rule_insights(current_insight, previous_insight, INSIGHT_SETTINGS))
     checklist = small_sample_checklist(len(week_apps), MIN_SAMPLE_FOR_INSIGHT)
     if checklist:
         with st.container(border=True):
@@ -845,10 +835,23 @@ def render_daily():
         if day_view is None:
             st.caption("비교할 광고비·지원 데이터가 없습니다.")
         else:
-            show_table(day_view.round(1), use_container_width=True, hide_index=True)
+            show_table(day_view.drop(columns=["참고", "권장 액션"]).round(1), use_container_width=True, hide_index=True)
 
-    st.caption("기준: 비용 증가·지원 감소·CPA 악화/개선 비율은 config.py 설정값을 따릅니다. "
-               "표본(현재+직전 지원)이 적은 매체는 '표본 적음'으로 표시합니다.")
+    # 제안 액션은 하루 표본이 적어 최근 3일 vs 직전 3일 기준으로 만듭니다
+    st.markdown("#### 🧭 제안 액션 (최근 3일 vs 직전 3일 기준)")
+    if cov_e is None:
+        st.info("광고 데이터가 없어 제안 액션을 만들 수 없습니다.")
+    else:
+        actions = media_funnel_actions(wide, cov_e - pd.Timedelta(days=2), cov_e,
+                                       cov_e - pd.Timedelta(days=5), cov_e - pd.Timedelta(days=3))
+        if actions:
+            for action in actions:
+                st.markdown(f"- {action}")
+        else:
+            st.caption("특이 변화가 없어 현재 집행을 유지하며 다음 추이를 확인하세요.")
+
+    st.caption("제안 기준: 노출 30% 이상 감소, CTR 20% 이상 하락, 클릭당 비용 30% 이상 상승, "
+               "단계 전환이 전체 평균의 70% 미만, 클릭 30회 이상일 때 판단합니다.")
 
     # '데이터 업데이트 상태'와 '마케팅 액션 로그와 전후 비교' 섹션은 숨김 처리했습니다.
 
