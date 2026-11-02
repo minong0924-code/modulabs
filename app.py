@@ -249,21 +249,8 @@ def render_insights(insights: list):
 
 
 def render_data_status(bundle: dict, cov_start, cov_end, now_kst: datetime):
-    """데이터 기준 시각과 업데이트 상태를 표시합니다."""
-    apps = bundle["apps"]
-    latest_apply = apps["지원일"].max() if not apps.empty else None
-    snapshot = bundle.get("snapshot")
-    snapshot_text = "확인 불가"
-    if snapshot is not None and pd.notna(snapshot):
-        snapshot_ts = pd.Timestamp(snapshot)
-        snapshot_ts = snapshot_ts.tz_localize("UTC") if snapshot_ts.tzinfo is None else snapshot_ts
-        snapshot_text = snapshot_ts.tz_convert(KST).strftime("%Y-%m-%d %H:%M")
-    st.caption(
-        f"조회 기준 시각 {now_kst:%Y-%m-%d %H:%M} (KST) · 지원자 데이터 최신 지원일 "
-        f"{to_date(latest_apply) if latest_apply is not None and pd.notna(latest_apply) else '-'} · "
-        f"광고 데이터 {to_date(cov_start) if cov_start is not None else '-'} ~ "
-        f"{to_date(cov_end) if cov_end is not None else '-'} (적재 시각 {snapshot_text})"
-    )
+    """탭 상단에 조회 기준 시각만 표시합니다. (지원일·광고 기간·적재 시각 등 상세 상태는 숨김 처리)"""
+    st.caption(f"조회 기준 시각 {now_kst:%Y-%m-%d %H:%M} (KST)")
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +343,9 @@ if apps.empty:
 else:
     st.sidebar.success(f"✅ {selected_course['name']} {selected_cohort}기 데이터 로드 완료")
 
-tab_overview, tab_media, tab_weekly, tab_daily, tab_settings = st.tabs(
-    ["📈 종합 현황", "🧩 매체별 현황", "📅 주차별 현황", "📆 일자별 현황", "⚙️ 설정·지표 정의"]
+# '설정·지표 정의' 탭은 숨김 처리했습니다 (render_settings 함수는 필요 시 다시 연결할 수 있도록 남겨 둠)
+tab_overview, tab_media, tab_weekly, tab_daily = st.tabs(
+    ["📈 종합 현황", "🧩 매체별 현황", "📅 주차별 현황", "📆 일자별 현황"]
 )
 
 
@@ -833,38 +821,7 @@ def render_daily():
     else:
         st.caption("급감 매체가 없습니다.")
 
-    st.markdown("#### 🛰️ 데이터 업데이트 상태")
-    yesterday_ts = pd.Timestamp(yesterday)
-    lag_days = (yesterday_ts - cov_end).days if cov_end is not None else None
-    if lag_days is None:
-        st.error("광고 데이터 최신 일자를 확인할 수 없습니다.")
-    elif lag_days > 0:
-        st.info(f"광고 데이터 최신 일자는 {to_date(cov_end)}입니다.")
-    else:
-        st.success(f"광고 데이터 최신 일자 {to_date(cov_end)} · 어제까지 반영 완료")
-    recent_apps = apps["지원일"].max() if not apps.empty else None
-    st.caption(f"지원자 시트 최신 지원일: {to_date(recent_apps) if recent_apps is not None and pd.notna(recent_apps) else '-'}")
-
-    st.markdown("#### 📝 마케팅 액션 로그와 전후 비교")
-    if not ACTION_LOG_SHEET_ID.strip():
-        st.info("마케팅 액션 로그가 연결되지 않았습니다. config.py의 ACTION_LOG_SHEET_ID를 입력하세요.")
-    elif actions.empty:
-        st.info("모집 기간·과정·기수에 해당하는 액션 기록이 없습니다.")
-    else:
-        rows = []
-        for _, action in actions.iterrows():
-            result = before_after(frame, action["변경일"], window=7)
-            before, after = result["전"], result["후"]
-            after_done = pd.Timestamp(action["변경일"]) + pd.Timedelta(days=7) <= pd.Timestamp(data_latest) + pd.Timedelta(days=1)
-            rows.append({
-                "변경일": to_date(action["변경일"]), "매체": action["매체"], "변경 유형": action["변경유형"],
-                "변경 내용": action["변경내용"], "변경 이유": action["변경이유"], "담당자": action["담당자"],
-                "확인 지표": action["추후 확인 지표"],
-                "확인 예정일": to_date(action["확인 예정일"]) if pd.notna(action["확인 예정일"]) else "",
-                "전 7일 CPA": before["CPA"], "후 7일 CPA": after["CPA"],
-                "후 기간": "완료" if after_done else f"진행 중({after['days']:,}일)",
-            })
-        show_table(pd.DataFrame(rows).round(0), use_container_width=True, hide_index=True)
+    # '데이터 업데이트 상태'와 '마케팅 액션 로그와 전후 비교' 섹션은 숨김 처리했습니다.
 
 
 with tab_daily:
@@ -939,5 +896,3 @@ def render_settings():
     )
 
 
-with tab_settings:
-    render_settings()
