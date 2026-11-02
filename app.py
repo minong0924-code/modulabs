@@ -268,10 +268,17 @@ if st.sidebar.button("🔄 데이터 새로고침"):
 st.sidebar.markdown("---")
 
 course_type = st.sidebar.radio("과정 유형 선택", ("실업자 과정", "재직자 과정"))
+# 과정 유형별 기본(맨 앞) 과정: 실업자는 AI에이전트, 재직자는 데이터
+FIRST_COURSE_BY_TYPE = {"unemployed": "ai_agent", "employed": "data_analysis"}
+
+
 def courses_of_type(type_label: str) -> dict:
     """선택한 유형(실업자·재직자)의 전체 과정과 기수 목록을 반환합니다. 종료된 기수도 포함합니다."""
     type_key = "unemployed" if type_label == "실업자 과정" else "employed"
-    return {cid: course for cid, course in COURSES.items() if course["type"] == type_key and course["cohorts"]}
+    courses = {cid: course for cid, course in COURSES.items() if course["type"] == type_key and course["cohorts"]}
+    # 유형별로 먼저 보여 줄 과정을 맨 앞에 둡니다 (나머지는 설정 순서 유지)
+    first = FIRST_COURSE_BY_TYPE.get(type_key)
+    return dict(sorted(courses.items(), key=lambda item: item[0] != first))
 
 
 def default_cohort(course_id: str) -> int:
