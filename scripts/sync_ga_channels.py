@@ -295,6 +295,9 @@ def material_for(channel, match):
     if channel == "네이버 SA":
         # 네이버 SA의 키워드 뒤에 붙는 광고 ID(_nad-…)는 제외
         return match["session_term"].split("_nad-")[0]
+    if channel in ("커뮤니티/버티컬", "카카오 플러스친구"):
+        # 광고 콘텐츠(GA utm_content)를 가공하지 않고 그대로 기록
+        return match["session_content"]
     return ""
 
 
