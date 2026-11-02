@@ -10,7 +10,6 @@ import re
 import sys
 import time
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -26,6 +25,37 @@ WAKE_BUTTON_WAIT_MS = 45_000
 HOLD_SECONDS = 30
 # 실패 시 저장할 스크린샷 경로 (워크플로에서 아티팩트로 업로드)
 FAILURE_SCREENSHOT_PATH = "keep_alive_failure.png"
+
+
+def find_app_frame(page, timeout_ms: int):
+    """앱이 들어 있는 화면(바깥 페이지 또는 iframe)을 찾습니다.
+
+    Streamlit Cloud는 앱을 iframe 안에 넣어 보여 주므로, 바깥 페이지와 모든 iframe을 함께 확인합니다.
+    깨우기 버튼이 보이면 눌러 주고, 앱 화면(stApp)이 나타나면 그 화면을 돌려줍니다.
+
+    Args:
+        page: Playwright 페이지 객체
+        timeout_ms: 전체 대기 시간 (ms)
+
+    Returns:
+        앱 화면 객체, 시간 안에 찾지 못하면 None
+    """
+    deadline = time.time() + timeout_ms / 1000
+    woke = False
+    while time.time() < deadline:
+        for frame in [page] + [f for f in page.frames if f != page.main_frame]:
+            try:
+                if frame.locator('[data-testid="stApp"]').count() > 0:
+                    return frame
+                wake = frame.get_by_role("button", name=WAKE_BUTTON_PATTERN)
+                if not woke and wake.count() > 0 and wake.first.is_visible():
+                    logger.info("절전 상태 감지, 앱 깨우기 버튼 클릭")
+                    wake.first.click()
+                    woke = True
+            except Exception:
+                continue
+        page.wait_for_timeout(2_000)
+    return None
 
 
 def keep_alive(url: str) -> bool:
@@ -44,16 +74,9 @@ def keep_alive(url: str) -> bool:
             logger.info("대시보드 접속: %s", url)
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
-            # 절전 화면의 깨우기 버튼은 자바스크립트가 뜬 뒤에 나타나므로, 잠시 기다렸다가 확인합니다
-            wake_button = page.get_by_role("button", name=WAKE_BUTTON_PATTERN)
-            try:
-                wake_button.first.wait_for(state="visible", timeout=WAKE_BUTTON_WAIT_MS)
-                logger.info("절전 상태 감지, 앱 깨우기 버튼 클릭")
-                wake_button.first.click()
-            except PlaywrightTimeoutError:
-                logger.info("깨우기 버튼 없음 (이미 실행 중이거나 화면 로딩 중)")
-
-            page.wait_for_selector('[data-testid="stApp"]', timeout=RENDER_TIMEOUT_MS)
+            app_frame = find_app_frame(page, WAKE_BUTTON_WAIT_MS + RENDER_TIMEOUT_MS)
+            if app_frame is None:
+                raise TimeoutError("앱 화면(stApp)을 시간 안에 찾지 못했습니다")
             logger.info("앱 렌더링 확인, %d초간 세션 유지", HOLD_SECONDS)
             time.sleep(HOLD_SECONDS)
             return True
