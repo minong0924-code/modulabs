@@ -394,3 +394,148 @@ def create_document_rejection_chart(rejection_df: pd.DataFrame) -> go.Figure:
     )
 
     return fig
+
+
+def create_inflow_cost_chart(daily_block_df: pd.DataFrame) -> go.Figure:
+    """일자별 매체 비용 누적 막대 차트
+
+    Args:
+        daily_block_df: 일자·매체별 지표 DataFrame (컬럼: date, block, 비용)
+    """
+    fig = px.bar(
+        daily_block_df, x="date", y="비용", color="block",
+        labels={"date": "일자", "비용": "비용(원)", "block": "매체"},
+        barmode="stack",
+    )
+    fig.update_layout(height=380, legend_title_text="매체", margin=dict(t=30))
+    return fig
+
+
+def create_inflow_funnel_chart(daily_total_df: pd.DataFrame) -> go.Figure:
+    """일자별 GA 전환 단계 추이 (매체 합산)
+
+    Args:
+        daily_total_df: 일자별 합계 DataFrame (컬럼: date, 페이지뷰, CTA 클릭, 지원서 랜딩, 지원서 제출)
+    """
+    stages = ["페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
+    long_df = daily_total_df.melt(id_vars="date", value_vars=stages, var_name="단계", value_name="인원")
+    fig = px.line(
+        long_df, x="date", y="인원", color="단계", markers=True,
+        labels={"date": "일자", "인원": "인원(명)"},
+        category_orders={"단계": stages},
+    )
+    fig.update_layout(height=380, legend_title_text="단계", margin=dict(t=30))
+    return fig
+
+
+def create_weekly_cpa_chart(weekly_block_df: pd.DataFrame) -> go.Figure:
+    """주차별 매체 CPA(지원서 제출 1건당 비용) 추이
+
+    Args:
+        weekly_block_df: 주·매체별 DataFrame (컬럼: week_start, block, CPA(제출))
+    """
+    frame = weekly_block_df.dropna(subset=["CPA(제출)"])
+    fig = px.line(
+        frame, x="week_start", y="CPA(제출)", color="block", markers=True,
+        labels={"week_start": "주 시작일", "CPA(제출)": "CPA(원)", "block": "매체"},
+    )
+    fig.update_layout(height=380, legend_title_text="매체", margin=dict(t=30))
+    return fig
+
+
+def create_stage_bar_chart(stage_df: pd.DataFrame) -> go.Figure:
+    """현재 전형 단계별 인원 가로 막대 차트
+
+    Args:
+        stage_df: 단계, 인원 열을 가진 DataFrame (표시 순서대로 정렬되어 있어야 함)
+    """
+    fig = px.bar(
+        stage_df, x="인원", y="단계", orientation="h", text="인원",
+        labels={"인원": "인원(명)", "단계": ""},
+    )
+    fig.update_yaxes(autorange="reversed")
+    fig.update_traces(textposition="outside")
+    fig.update_layout(height=max(260, 36 * len(stage_df)), margin=dict(t=20, r=40))
+    return fig
+
+
+def create_applicant_funnel_chart(stages: list) -> go.Figure:
+    """지원자 퍼널 도식: 단계별 누적 인원을 깔때기로 그리고, 직전 단계 대비 전환율을 라벨에 붙입니다.
+
+    Args:
+        stages: [(단계 이름, 인원), ...] 순서대로 (지원 → 서류 통과 → ... → 등록)
+
+    Returns:
+        plotly Figure
+    """
+    labels = [label for label, _ in stages]
+    values = [int(value) for _, value in stages]
+    text = []
+    for i, value in enumerate(values):
+        if i == 0 or values[i - 1] == 0:
+            text.append(f"{value:,}명")
+        else:
+            text.append(f"{value:,}명 ({value / values[i - 1] * 100:.1f}%)")
+
+    fig = go.Figure(go.Funnel(
+        y=labels,
+        x=values,
+        text=text,
+        textinfo="text",
+        textposition="inside",
+        textfont=dict(size=12, color="white"),
+        marker=dict(color=["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728", "#9467bd"][:len(values)]),
+        hovertemplate="<b>%{y}</b><br>인원: %{x:,}명<extra></extra>",
+    ))
+    fig.update_layout(
+        height=380,
+        margin=dict(l=50, r=50, t=30, b=30),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def create_weekly_cost_applicant_chart(weekly_df: pd.DataFrame) -> go.Figure:
+    """주차별 광고비(막대)와 지원 수(선) 이중축 차트
+
+    Args:
+        weekly_df: week_start, 비용, 지원 열을 가진 DataFrame (주 시작일 오름차순)
+    """
+    fig = go.Figure()
+    fig.add_bar(x=weekly_df["week_start"], y=weekly_df["비용"], name="광고비(원)", marker_color="#4C78A8")
+    fig.add_scatter(x=weekly_df["week_start"], y=weekly_df["지원"], name="지원 수(명)", mode="lines+markers",
+                    yaxis="y2", line=dict(color="#E45756"))
+    fig.update_layout(
+        height=380, margin=dict(t=30), legend=dict(orientation="h", y=1.1),
+        yaxis=dict(title="광고비(원)"),
+        yaxis2=dict(title="지원 수(명)", overlaying="y", side="right", rangemode="tozero"),
+        xaxis=dict(title="주 시작일"),
+    )
+    return fig
+
+
+def create_daily_timeline_chart(daily_df: pd.DataFrame, actions_df: pd.DataFrame = None) -> go.Figure:
+    """일자별 광고비(막대)·지원 수(선) 추이와 마케팅 액션 시점 표시
+
+    Args:
+        daily_df: date, 비용, 지원 열을 가진 일별 DataFrame
+        actions_df: 변경일, 매체, 변경유형 열을 가진 액션 로그 (선택)
+    """
+    fig = go.Figure()
+    fig.add_bar(x=daily_df["date"], y=daily_df["비용"], name="광고비(원)", marker_color="#4C78A8")
+    fig.add_scatter(x=daily_df["date"], y=daily_df["지원"], name="지원 수(명)", mode="lines+markers",
+                    yaxis="y2", line=dict(color="#E45756"))
+    if actions_df is not None and not actions_df.empty:
+        for _, action in actions_df.iterrows():
+            label = f"{action.get('변경유형', '')} ({action.get('매체', '')})"
+            fig.add_vline(x=action["변경일"], line_dash="dot", line_color="#54A24B")
+            fig.add_annotation(x=action["변경일"], y=1, yref="paper", text=label, showarrow=False,
+                               textangle=-90, yanchor="bottom", font=dict(size=11, color="#54A24B"))
+    fig.update_layout(
+        height=400, margin=dict(t=40), legend=dict(orientation="h", y=1.12),
+        yaxis=dict(title="광고비(원)"),
+        yaxis2=dict(title="지원 수(명)", overlaying="y", side="right", rangemode="tozero"),
+        xaxis=dict(title="일자"),
+    )
+    return fig

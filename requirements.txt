@@ -7,3 +7,4 @@ pandas
 plotly
 python-dateutil
 google-cloud-bigquery
+db-dtypes

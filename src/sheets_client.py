@@ -94,3 +94,37 @@ def get_sheet_data(sheet_id: str, sheet_name: str, header_row: int = 4):
     except Exception as e:
         st.error(f"데이터 조회 실패: {e}")
         return None
+
+
+def get_ad_sheet_date_range(sheet_id: str, sheet_name: str = "2.1 일자별 유입현황"):
+    """2.1 시트 B열(일자)의 첫 날짜와 최하단 날짜를 'YYYY-MM-DD' 문자열로 반환합니다.
+
+    조회 기간의 최소·최대와 모집 마감일 기본값으로 쓰입니다.
+    날짜 셀이 하나도 없거나 읽기에 실패하면 (None, None)을 반환합니다.
+
+    Args:
+        sheet_id: 과정·기수 스프레드시트 ID
+        sheet_name: 광고 유입 시트 이름 (기본값: 2.1 일자별 유입현황)
+
+    Returns:
+        (첫 날짜, 마지막 날짜) 문자열 튜플
+    """
+    from datetime import date, timedelta
+
+    try:
+        client = get_sheets_client()
+        if client is None:
+            return None, None
+        worksheet = client.open_by_key(sheet_id).worksheet(sheet_name)
+        rows = worksheet.get_all_values(value_render_option="UNFORMATTED_VALUE")
+        days = []
+        for row in rows[4:]:
+            cell = str(row[1]).strip() if len(row) > 1 else ""
+            if cell.replace(".", "", 1).isdigit():
+                days.append(date(1899, 12, 30) + timedelta(days=int(float(cell))))
+        if not days:
+            return None, None
+        return days[0].isoformat(), days[-1].isoformat()
+    except Exception as error:  # 날짜 범위는 부가 정보이므로 실패해도 화면은 계속 동작
+        st.warning(f"2.1 시트 날짜 범위를 읽지 못했습니다: {error}")
+        return None, None

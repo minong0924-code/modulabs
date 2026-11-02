@@ -1,9 +1,14 @@
 """시트 데이터 파싱 및 퍼널 집계"""
 
+import logging
+import re
+
 import pandas as pd
 from datetime import datetime
-from .sheets_client import get_sheet_data
+from .sheets_client import get_sheet_data, get_sheets_client
 from .config import FUNNEL_COLS, FUNNEL_LABELS, REQUIRED_COLUMNS
+
+logger = logging.getLogger(__name__)
 
 def load_applicants(sheet_id: str, sheet_name: str, header_row: int = 4) -> pd.DataFrame:
     """시트에서 지원자 행 데이터를 DataFrame으로 반환"""
@@ -33,6 +38,42 @@ def load_applicants(sheet_id: str, sheet_name: str, header_row: int = 4) -> pd.D
         df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
 
     return df
+
+APPLY_RAW_TAB = "사업팀 시트(지원서 합불 RAW)"
+APPLY_RAW_HEADER_ROWS = 3  # 1~3행은 제목·안내, 4행부터 데이터
+
+
+def load_apply_raw(sheet_id: str) -> pd.DataFrame:
+    """사업팀 지원서 RAW 탭에서 이름·지원일·전화번호(숫자만)를 읽습니다. 읽기 전용이며 탭을 수정하지 않습니다.
+
+    같은 이름과 지원일에 전화번호가 여럿이면 어느 사람인지 정할 수 없으므로 전화번호를 비웁니다.
+
+    Args:
+        sheet_id: 과정·기수 스프레드시트 ID
+
+    Returns:
+        이름, 지원일(YYYY-MM-DD), 전화번호 열 DataFrame. 탭이 없거나 읽지 못하면 빈 DataFrame.
+    """
+    empty = pd.DataFrame(columns=["이름", "지원일", "전화번호"])
+    if not sheet_id or not sheet_id.strip():
+        return empty
+    try:
+        book = get_sheets_client().open_by_key(sheet_id)
+        if APPLY_RAW_TAB not in [ws.title for ws in book.worksheets()]:
+            return empty
+        values = book.worksheet(APPLY_RAW_TAB).get_all_values()[APPLY_RAW_HEADER_ROWS:]
+    except Exception as error:  # 네트워크·권한 오류 시 동일인 판정 없이 진행합니다
+        logger.warning("지원서 RAW 탭을 읽지 못해 동일인 판정을 건너뜁니다: %s", error)
+        return empty
+
+    rows = []
+    for row in values:
+        if len(row) < 4 or not row[2].strip():
+            continue
+        date_text = row[1].strip()[:10].replace(".", "-")
+        rows.append({"이름": row[2].strip(), "지원일": date_text, "전화번호": re.sub(r"\D", "", row[3])})
+    return pd.DataFrame(rows, columns=["이름", "지원일", "전화번호"])
+
 
 def get_funnel_counts(df: pd.DataFrame) -> dict:
     """퍼널 단계별 인원 수 집계"""

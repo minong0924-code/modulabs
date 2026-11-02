@@ -80,7 +80,7 @@ LOG_TABLE_ID = f"{BQ_PROJECT}.Modulabs_internal_DB.sheet_auto_log"
 GA_EVENTS_DATASET = f"{BQ_PROJECT}.analytics_373566527"
 
 # 기록에서 제외할 신청자 이름 (대행사 테스트 데이터)
-EXCLUDED_NAMES = {"김보현", "고유진"}
+EXCLUDED_NAMES = {"김보현", "고유진", "진문익"}
 
 # 재직자 과정은 캠페인 구분을 기록하지 않음
 EMPLOYED_SKIP_FIELDS = {"campaign", "age"}
@@ -624,7 +624,9 @@ def copy_row_formats(worksheet, src_row, dst_rows):
 
 
 def is_test_applicant(name):
-    """테스트 신청자인지 확인합니다. 이름에 '테스트'가 들어가거나 제외 목록에 있으면 True입니다.
+    """테스트 신청자인지 확인합니다.
+
+    이름에 '테스트' 또는 'test'(대소문자 무시)가 들어가거나 제외 목록에 있으면 True입니다.
 
     Args:
         name: 신청자 이름
@@ -633,7 +635,7 @@ def is_test_applicant(name):
         테스트 신청자이면 True
     """
     name = (name or "").strip()
-    return "테스트" in name or name in EXCLUDED_NAMES
+    return "테스트" in name or "test" in name.lower() or name in EXCLUDED_NAMES
 
 
 def ga_ready(bq_client, day):
