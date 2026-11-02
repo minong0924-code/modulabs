@@ -62,7 +62,7 @@ from src.metrics import (
     channel_quality_table,
     recommended_actions,
     small_sample_checklist,
-    media_funnel_actions,
+    efficiency_actions,
     weekly_narrative,
     compare_group_tables,
     group_period_table,
@@ -675,8 +675,8 @@ def render_weekly():
             view[column] = view[column].map(fmt_change)
         show_table(view.round(1), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🧭 이번 주 요약과 제안 액션")
-    narrative = weekly_narrative(apps, wide, cur_start, cur_end, prev_start, prev_end, MIN_SAMPLE_FOR_INSIGHT)
+    st.markdown("#### 🧭 이번 주 요약과 제안 액션 (지출 대비 전환 효율)")
+    narrative = weekly_narrative(wide, cur_start, cur_end, prev_start, prev_end)
     with st.container(border=True):
         st.markdown(f"**총평** {narrative['headline']}")
         if narrative["spend_lines"]:
@@ -838,20 +838,18 @@ def render_daily():
             show_table(day_view.drop(columns=["참고", "권장 액션"]).round(1), use_container_width=True, hide_index=True)
 
     # 제안 액션은 하루 표본이 적어 최근 3일 vs 직전 3일 기준으로 만듭니다
-    st.markdown("#### 🧭 제안 액션 (최근 3일 vs 직전 3일 기준)")
+    st.markdown("#### 🧭 제안 액션 (최근 3일 기준, 지출 대비 전환 효율)")
     if cov_e is None:
         st.info("광고 데이터가 없어 제안 액션을 만들 수 없습니다.")
     else:
-        actions = media_funnel_actions(wide, cov_e - pd.Timedelta(days=2), cov_e,
-                                       cov_e - pd.Timedelta(days=5), cov_e - pd.Timedelta(days=3))
+        actions = efficiency_actions(wide, cov_e - pd.Timedelta(days=2), cov_e)
         if actions:
             for action in actions:
                 st.markdown(f"- {action}")
         else:
             st.caption("특이 변화가 없어 현재 집행을 유지하며 다음 추이를 확인하세요.")
 
-    st.caption("제안 기준: 노출 30% 이상 감소, CTR 20% 이상 하락, 클릭당 비용 30% 이상 상승, "
-               "단계 전환이 전체 평균의 70% 미만, 클릭 30회 이상일 때 판단합니다.")
+    st.caption("제안 기준: 매체별 제출당 비용을 타 매체 평균과 비교합니다. 평균의 1.5배 이상이면 저조, 0.67배 이하면 우수로 봅니다.")
 
     # '데이터 업데이트 상태'와 '마케팅 액션 로그와 전후 비교' 섹션은 숨김 처리했습니다.
 

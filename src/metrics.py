@@ -765,190 +765,122 @@ def recommended_actions(note: str) -> str:
     return " / ".join(dict.fromkeys(actions)) if actions else "유지 모니터링"
 
 
-def weekly_narrative(apps: pd.DataFrame, wide: pd.DataFrame, start, end, prev_start, prev_end,
-                     min_sample: int = 10) -> dict:
-    """선택 주의 광고비·유입·전환을 한 흐름으로 요약하고, 이번 주 제안 액션을 만듭니다.
+def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float = 1.5,
+                       strong_ratio: float = 0.67, min_share: float = 5.0) -> list:
+    """지출 대비 전환을 타 매체와 비교해 중단·예산 이관·증액을 제안합니다. 지원 수(2.2 시트)는 쓰지 않습니다.
 
-    - 총평: 전체 광고비·지원·지원 CPA와 직전 주 대비 변화
-    - 매체별: 광고비 비중, 클릭(유입), 클릭당 비용, 지원(전환), 지원 CPA
-    - 차이: 클릭당 비용과 클릭 대비 지원율이 가장 크게 다른 매체
-    - 제안 액션: 규칙 기반 (표본이 적으면 판단을 보류)
+    기준 지표는 전환 1건당 비용입니다(지원서 제출당 비용, CTA 클릭당 비용). 타 매체 전체 평균과 비교합니다.
+    - 제출 0건: 광고비만 쓰고 제출이 없으면 OFF를 검토합니다.
+    - 제출당 비용이 타 매체 평균의 weak_ratio배 이상: 저조 — 중단 또는 축소를 검토하고 가장 효율 좋은 매체로 이관을 권합니다.
+      약한 구간(CTA 단계 또는 지원서 단계)을 함께 짚습니다.
+    - 제출당 비용이 타 매체 평균의 strong_ratio배 이하: 우수 — 증액을 검토합니다.
+    광고비 비중이 min_share% 미만인 매체는 제외합니다.
 
     Args:
-        apps: prepare_applicants() 결과
-        wide: 광고 일별 데이터 (date, block, 비용, 클릭 열)
+        wide: 광고 일별 데이터 (date, block, 비용, CTA 클릭, 지원서 제출 열)
+        cur_start, cur_end: 판단 기간 (일자별은 최근 3일, 주차별은 선택 주)
+        weak_ratio: 저조 판단 배율
+        strong_ratio: 우수 판단 배율
+        min_share: 광고비 비중 최소치(%)
+
+    Returns:
+        "매체: 액션" 문자열 목록. 비교할 매체가 2개 미만이면 빈 목록.
+    """
+    if wide is None or wide.empty:
+        return []
+    part = wide[(wide["date"] >= pd.Timestamp(cur_start)) & (wide["date"] <= pd.Timestamp(cur_end))]
+    if part.empty:
+        return []
+    agg = part.groupby("block")[["비용", "CTA 클릭", "지원서 제출"]].sum()
+    agg = agg[agg["비용"] > 0]
+    if len(agg) < 2:
+        return []
+    total_cost = float(agg["비용"].sum())
+    if total_cost <= 0:
+        return []
+    cps_all = {b: safe_div(r["비용"], r["지원서 제출"]) for b, r in agg.iterrows()}
+    cpc_all = {b: safe_div(r["비용"], r["CTA 클릭"]) for b, r in agg.iterrows()}
+    valid_cps = {b: v for b, v in cps_all.items() if pd.notna(v)}
+    best_block = min(valid_cps, key=valid_cps.get) if valid_cps else None
+
+    actions = []
+    for block, row in agg.iterrows():
+        share = row["비용"] / total_cost * 100
+        if share < min_share:
+            continue
+        others = agg.drop(index=block).sum()
+        if others["지원서 제출"] <= 0:
+            continue
+        others_cps = others["비용"] / others["지원서 제출"]
+        others_cpc = safe_div(others["비용"], others["CTA 클릭"])
+        if row["지원서 제출"] == 0:
+            target = (f" 제출당 비용이 가장 낮은 {best_block}({valid_cps[best_block]:,.0f}원)로 예산 이관을 검토하세요."
+                      if best_block and best_block != block else "")
+            actions.append(f"{block}: 광고비 {row['비용']:,.0f}원을 쓰고 지원서 제출이 0건입니다. 타 매체 평균 제출당 비용은 "
+                           f"{others_cps:,.0f}원입니다. 광고를 OFF(중단)하는 것을 검토하세요.{target}")
+            continue
+        cps = cps_all[block]
+        if cps >= others_cps * weak_ratio:
+            cpc_ratio = safe_div(cpc_all[block], others_cpc)
+            weak_stage = "유입→CTA 단계" if pd.notna(cpc_ratio) and cpc_ratio >= weak_ratio else "CTA 이후 지원서 단계"
+            target = (f" 광고비의 약 50%({row['비용'] * 0.5:,.0f}원)를 제출당 비용이 가장 낮은 {best_block}"
+                      f"({valid_cps[best_block]:,.0f}원)로 옮기는 것을 검토하세요.") if best_block and best_block != block else ""
+            actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)의 "
+                           f"{cps / others_cps:.1f}배입니다. 약한 구간은 {weak_stage}입니다. 광고 중단 또는 축소를 검토하세요.{target}")
+        elif cps <= others_cps * strong_ratio:
+            actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)보다 "
+                           f"{(1 - cps / others_cps) * 100:.0f}% 낮습니다. 예산 증액을 검토하세요.")
+    return actions
+
+
+def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> dict:
+    """선택 주의 광고비와 전환(CTA 클릭·지원서 제출)을 매체별로 요약하고, 효율 기준 제안 액션을 붙입니다.
+
+    Args:
+        wide: 광고 일별 데이터
         start, end: 선택 주 기간
         prev_start, prev_end: 직전 주 기간
-        min_sample: 판단에 필요한 최소 지원 수
 
     Returns:
         {"headline": str, "spend_lines": [str], "difference_lines": [str], "actions": [str]}
     """
-    empty = {"headline": "이번 주 광고·지원 데이터가 없습니다.", "spend_lines": [], "difference_lines": [], "actions": []}
-    cur = group_period_table(apps, wide, start, end)
-    if cur.empty:
-        return empty
-    prev = group_period_table(apps, wide, prev_start, prev_end)
-    start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
-    ad = wide[(wide["date"] >= start_ts) & (wide["date"] <= end_ts)] if wide is not None and not wide.empty else pd.DataFrame()
-    clicks = ad.groupby("block")["클릭"].sum().to_dict() if not ad.empty else {}
-
-    total_cost = float(cur["광고비"].sum())
-    total_apps = int(cur["지원"].sum())
-    total_cpa = safe_div(total_cost, total_apps)
-    prev_cost = float(prev["광고비"].sum()) if not prev.empty else 0.0
-    prev_apps = int(prev["지원"].sum()) if not prev.empty else 0
-    cost_change = pct_change(total_cost, prev_cost)
-    apps_change = pct_change(total_apps, prev_apps)
-
-    def change_text(value):
-        """증감률을 '+12%' 같은 문자열로 바꿉니다 (직전 0이면 '신규')."""
-        if isinstance(value, str):
-            return value
-        if pd.isna(value):
-            return "-"
-        return f"{value:+.0f}%"
-
-    headline = (f"이번 주 전체 광고비 {total_cost:,.0f}원, 지원 {total_apps:,}명, "
-                f"지원 CPA {total_cpa:,.0f}원 (직전 주 대비 광고비 {change_text(cost_change)}, 지원 {change_text(apps_change)}).")
-
-    spend = cur[cur["광고비"] > 0].sort_values("광고비", ascending=False)
-    spend_lines, detail = [], []
-    for _, row in spend.iterrows():
-        name = row["매체"]
-        cost = float(row["광고비"])
-        click = float(clicks.get(name, 0.0))
-        apps_n = int(row["지원"])
-        cpc = safe_div(cost, click)
-        click_to_apply = safe_div(apps_n, click) * 100
-        cpa_text = f"{row['지원 CPA']:,.0f}원" if pd.notna(row["지원 CPA"]) else "-"
-        spend_lines.append(
-            f"{name}: 광고비 {cost:,.0f}원 ({row['광고비 비중(%)']:.0f}%) · 클릭 {click:,.0f}회 · "
-            f"클릭당 {cpc:,.0f}원 · 지원 {apps_n}명 · 지원 CPA {cpa_text}"
-        )
-        detail.append({"매체": name, "광고비": cost, "비중": row["광고비 비중(%)"], "클릭": click,
-                       "cpc": cpc, "클릭 대비 지원(%)": click_to_apply, "지원": apps_n, "cpa": row["지원 CPA"]})
-
-    difference_lines = []
-    with_clicks = [d for d in detail if d["클릭"] > 0]
-    if len(with_clicks) >= 2:
-        cheap = min(with_clicks, key=lambda d: d["cpc"])
-        pricey = max(with_clicks, key=lambda d: d["cpc"])
-        difference_lines.append(f"유입 차이: 클릭당 비용은 {cheap['매체']} {cheap['cpc']:,.0f}원 vs {pricey['매체']} {pricey['cpc']:,.0f}원으로 "
-                                f"{safe_div(pricey['cpc'], cheap['cpc']):.1f}배 차이가 납니다.")
-        best = max(with_clicks, key=lambda d: d["클릭 대비 지원(%)"])
-        worst = min(with_clicks, key=lambda d: d["클릭 대비 지원(%)"])
-        difference_lines.append(f"전환 차이: 클릭 대비 지원율은 {best['매체']} {best['클릭 대비 지원(%)']:.1f}% vs "
-                                f"{worst['매체']} {worst['클릭 대비 지원(%)']:.1f}%입니다.")
-
-    actions = []
-    sampled = [d for d in detail if d["지원"] >= min_sample and pd.notna(d["cpa"])]
-    if sampled:
-        best_cpa = min(sampled, key=lambda d: d["cpa"])
-        worst_cpa = max(sampled, key=lambda d: d["cpa"])
-        if best_cpa["매체"] != worst_cpa["매체"]:
-            actions.append(f"{best_cpa['매체']}는 지원 CPA가 가장 낮아({best_cpa['cpa']:,.0f}원) 예산을 소폭 늘리고 "
-                           "잘 되는 소재·키워드를 확장해 보세요.")
-            if worst_cpa["비중"] >= 20:
-                actions.append(f"{worst_cpa['매체']}는 광고비 비중({worst_cpa['비중']:.0f}%)에 비해 CPA가 가장 높아"
-                               f"({worst_cpa['cpa']:,.0f}원) 소재·타깃을 점검하고 예산 재배분을 검토하세요.")
-    for d in detail:
-        if d["광고비"] > 0 and d["지원"] == 0:
-            actions.append(f"{d['매체']}는 광고비 {d['광고비']:,.0f}원을 썼지만 지원이 0건입니다. 광고 승인·노출·랜딩 링크를 먼저 확인하세요.")
-        elif d["클릭"] >= 30 and d["지원"] >= 1 and with_clicks and d["클릭 대비 지원(%)"] < safe_div(
-                sum(x["지원"] for x in with_clicks), sum(x["클릭"] for x in with_clicks)) * 100 / 2:
-            actions.append(f"{d['매체']}는 클릭은 많지만 지원 전환이 낮습니다(클릭 대비 {d['클릭 대비 지원(%)']:.1f}%). "
-                           "랜딩과 지원서 문구가 광고 메시지와 맞는지 점검하세요.")
-    thin = [d["매체"] for d in detail if d["지원"] < min_sample]
-    if thin:
-        actions.append(f"지원 표본이 {min_sample}건 미만인 매체({', '.join(thin)})는 판단을 보류하고 지출만 관찰하세요.")
-    if not actions:
-        actions.append("이번 주는 뚜렷한 차이가 없습니다. 현재 집행을 유지하고 다음 주 추이를 확인하세요.")
-    return {"headline": headline, "spend_lines": spend_lines, "difference_lines": difference_lines, "actions": actions}
-
-
-MEDIA_METRIC_COLS = ["비용", "노출", "클릭", "페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
-
-
-def media_funnel_actions(wide: pd.DataFrame, cur_start, cur_end, prev_start, prev_end,
-                         min_clicks: int = 30) -> list:
-    """지원 수와 무관하게 매체별 광고 지표(비용·노출·클릭·랜딩·CTA·지원서)에서 개선 액션을 제안합니다.
-
-    - 집행 중단, 노출 급감(예산·입찰·승인), CTR 하락(소재 피로), CPC 상승(입찰·키워드 경쟁)
-    - 전체 평균 대비 낮은 단계 전환: 클릭→페이지뷰, 페이지뷰→CTA, CTA→지원서 랜딩, 지원서 랜딩→제출
-    단계 전환은 전체 평균의 70% 미만일 때만 제안합니다. 클릭이 min_clicks 미만이면 비율 판단을 생략합니다.
-
-    Args:
-        wide: 광고 일별 데이터 (date, block, 비용·노출·클릭·페이지뷰·CTA 클릭·지원서 랜딩·지원서 제출 열)
-        cur_start, cur_end: 비교할 최근 기간
-        prev_start, prev_end: 직전 기간
-        min_clicks: 비율 판단에 필요한 최소 클릭 수
-
-    Returns:
-        "매체: 액션" 문자열 목록. 해당 없으면 빈 목록.
-    """
-    if wide is None or wide.empty:
-        return []
-
-    def sums(start, end):
-        """기간의 매체(block)별 지표 합계를 구합니다."""
-        part = wide[(wide["date"] >= pd.Timestamp(start)) & (wide["date"] <= pd.Timestamp(end))]
+    def sums(a, b):
+        """기간의 매체별 광고비·CTA 클릭·지원서 제출 합계를 구합니다."""
+        if wide is None or wide.empty:
+            return pd.DataFrame(columns=["비용", "CTA 클릭", "지원서 제출"])
+        part = wide[(wide["date"] >= pd.Timestamp(a)) & (wide["date"] <= pd.Timestamp(b))]
         if part.empty:
-            return pd.DataFrame(columns=MEDIA_METRIC_COLS)
-        return part.groupby("block")[MEDIA_METRIC_COLS].sum()
+            return pd.DataFrame(columns=["비용", "CTA 클릭", "지원서 제출"])
+        return part.groupby("block")[["비용", "CTA 클릭", "지원서 제출"]].sum()
 
-    cur, prev = sums(cur_start, cur_end), sums(prev_start, prev_end)
-    blocks = sorted((set(cur.index) | set(prev.index)) & set(MATCHED_AD_GROUPS + ["타게팅게이츠", "틱톡", "네이버 브검"]))
-    if not blocks:
-        return []
-    cur = cur.reindex(blocks).fillna(0.0)
-    prev = prev.reindex(blocks).fillna(0.0)
-
-    # 전체 평균 단계 전환율 (매체 합계 기준)
+    cur, prev = sums(start, end), sums(prev_start, prev_end)
+    if cur.empty:
+        return {"headline": "이번 주 광고 데이터가 없습니다.", "spend_lines": [], "difference_lines": [], "actions": []}
     total = cur.sum()
-    avg = {
-        "클릭→페이지뷰": safe_div(total["페이지뷰"], total["클릭"]),
-        "페이지뷰→CTA": safe_div(total["CTA 클릭"], total["페이지뷰"]),
-        "CTA→지원서 랜딩": safe_div(total["지원서 랜딩"], total["CTA 클릭"]),
-        "지원서 랜딩→제출": safe_div(total["지원서 제출"], total["지원서 랜딩"]),
-    }
-    actions = []
-    for block in blocks:
-        c, p = cur.loc[block], prev.loc[block]
-        if p["비용"] > 0 and c["비용"] == 0:
-            actions.append(f"{block}: 집행이 멈췄습니다. 예산 소진·광고 승인 상태를 먼저 확인하세요.")
-            continue
-        if c["비용"] == 0 and c["노출"] == 0:
-            continue
-        if p["노출"] > 0 and c["노출"] / p["노출"] <= 0.7:
-            actions.append(f"{block}: 노출이 {(1 - c['노출'] / p['노출']) * 100:.0f}% 줄었습니다. "
-                           "예산·입찰 제한과 광고 승인 상태를 확인하고, 입찰가를 조정하세요.")
-        ctr_now, ctr_prev = safe_div(c["클릭"], c["노출"]), safe_div(p["클릭"], p["노출"])
-        if pd.notna(ctr_now) and pd.notna(ctr_prev) and ctr_prev > 0 and ctr_now / ctr_prev <= 0.8 and c["클릭"] >= min_clicks:
-            actions.append(f"{block}: CTR이 {ctr_prev * 100:.2f}% → {ctr_now * 100:.2f}%로 떨어졌습니다. "
-                           "소재 피로도를 의심하고 새 소재 2~3개를 투입해 보세요.")
-        cpc_now, cpc_prev = safe_div(c["비용"], c["클릭"]), safe_div(p["비용"], p["클릭"])
-        if pd.notna(cpc_now) and pd.notna(cpc_prev) and cpc_prev > 0 and cpc_now / cpc_prev >= 1.3 and c["클릭"] >= min_clicks:
-            actions.append(f"{block}: 클릭당 비용이 {(cpc_now / cpc_prev - 1) * 100:.0f}% 올랐습니다. "
-                           "입찰가와 경쟁이 센 키워드·지면을 점검하고 비효율 항목을 제외하세요.")
-        if c["클릭"] < min_clicks:
-            continue
-        stages = [
-            ("클릭→페이지뷰", c["페이지뷰"], c["클릭"],
-             "광고 클릭 대비 랜딩 도달이 낮습니다. 광고 도착 URL과 랜딩 로딩 속도(모바일 포함)를 점검하세요."),
-            ("페이지뷰→CTA", c["CTA 클릭"], c["페이지뷰"],
-             "랜딩에서 CTA 클릭이 적습니다. 상단 CTA의 위치와 문구를 점검하세요."),
-            ("CTA→지원서 랜딩", c["지원서 랜딩"], c["CTA 클릭"],
-             "CTA를 눌러도 지원서로 넘어가지 않는 비율이 큽니다. CTA 연결 링크와 지원서 진입 경로를 점검하세요."),
-            ("지원서 랜딩→제출", c["지원서 제출"], c["지원서 랜딩"],
-             "지원서 화면에서 이탈이 큽니다. 입력 항목 수와 본인인증 등 폼 단계를 줄여 보세요."),
-        ]
-        for label, num, den, text in stages:
-            rate = safe_div(num, den)
-            if pd.notna(rate) and pd.notna(avg[label]) and avg[label] > 0 and rate < avg[label] * 0.7 and den >= min_clicks / 3:
-                actions.append(f"{block}: {label} 전환이 {rate * 100:.1f}%로 전체 평균({avg[label] * 100:.1f}%)보다 낮습니다. {text}")
-                break
-    return actions
+    prev_cost = float(prev["비용"].sum()) if not prev.empty else 0.0
+    cost_change = pct_change(float(total["비용"]), prev_cost)
+    change_text = cost_change if isinstance(cost_change, str) else f"{cost_change:+.0f}%"
+    total_cps = safe_div(total["비용"], total["지원서 제출"])
+    cps_text = f"{total_cps:,.0f}원" if pd.notna(total_cps) else "-"
+    headline = (f"이번 주 전체 광고비 {total['비용']:,.0f}원 (직전 주 대비 {change_text}), "
+                f"지원서 제출 {total['지원서 제출']:,.0f}건, 제출당 비용 {cps_text}.")
+    spend_lines, priced = [], {}
+    for block, row in cur[cur["비용"] > 0].sort_values("비용", ascending=False).iterrows():
+        cps = safe_div(row["비용"], row["지원서 제출"])
+        if pd.notna(cps):
+            priced[block] = cps
+        spend_lines.append(
+            f"{block}: 광고비 {row['비용']:,.0f}원 ({row['비용'] / total['비용'] * 100:.0f}%) · CTA 클릭 {row['CTA 클릭']:,.0f}회 · "
+            f"지원서 제출 {row['지원서 제출']:,.0f}건 · 제출당 비용 " + (f"{cps:,.0f}원" if pd.notna(cps) else "-")
+        )
+    difference_lines = []
+    if len(priced) >= 2:
+        low, high = min(priced, key=priced.get), max(priced, key=priced.get)
+        difference_lines.append(f"효율 차이: 제출당 비용은 {low} {priced[low]:,.0f}원 vs {high} {priced[high]:,.0f}원입니다.")
+    actions = efficiency_actions(wide, start, end)
+    if not actions:
+        actions.append("이번 주는 매체 간 전환 효율 차이가 뚜렷하지 않습니다. 현재 집행을 유지하고 다음 주를 확인하세요.")
+    return {"headline": headline, "spend_lines": spend_lines, "difference_lines": difference_lines, "actions": actions}
 
 
 def reason_concentration(apps: pd.DataFrame) -> dict:
