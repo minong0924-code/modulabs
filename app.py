@@ -60,6 +60,7 @@ from src.metrics import (
     build_rule_insights,
     change_notes,
     channel_quality_table,
+    recommended_actions,
     compare_group_tables,
     group_period_table,
     missing_channel_rate,
@@ -71,7 +72,6 @@ from src.metrics import (
     reason_concentration,
     rejection_by_reason,
     safe_div,
-    spend_without_applicants,
     summarize_applicants,
 )
 
@@ -768,7 +768,7 @@ def build_daily_frame() -> pd.DataFrame:
 
 
 def render_daily():
-    """일별 추이, 7일 지표, 매체 지원 급감, 데이터 상태, 액션 로그를 그립니다."""
+    """일별 추이, 7일 지표, 전일 대비 참고 사항(권장 액션 포함)을 그립니다."""
     st.subheader("일자별 현황")
     render_data_status(bundle, cov_start, cov_end, now_kst)
     frame = build_daily_frame()
@@ -811,45 +811,37 @@ def render_daily():
     # 과거 날짜부터 오름차순으로 표시합니다 (YYYY-MM-DD 문자열이라 사전순 = 날짜순)
     show_table(table.sort_values("date", ascending=True).round(1), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🔎 직전 7일 대비 참고 사항 (최근 7일 vs 직전 7일)")
     cov_s, cov_e = ad_coverage(wide)
-    if cov_e is None:
-        st.info("광고 데이터가 없어 직전 대비를 계산할 수 없습니다.")
-    else:
-        cur_clip = clip_period(cov_e - pd.Timedelta(days=6), cov_e, cov_s, cov_e)
-        prev_clip = clip_period(cov_e - pd.Timedelta(days=13), cov_e - pd.Timedelta(days=7), cov_s, cov_e)
+
+    def change_view(cur_start, cur_end, prev_start, prev_end):
+        """두 기간의 매체별 광고비·지원·CPA 변화와 참고 문구·권장 액션 표를 만듭니다. 비교할 데이터가 없으면 None."""
+        cur_clip = clip_period(cur_start, cur_end, cov_s, cov_e)
+        prev_clip = clip_period(prev_start, prev_end, cov_s, cov_e)
         cur_tbl = group_period_table(apps, wide, *cur_clip) if cur_clip[0] is not None else pd.DataFrame()
         prev_tbl = group_period_table(apps, wide, *prev_clip) if prev_clip[0] is not None else pd.DataFrame()
         comp = compare_group_tables(cur_tbl, prev_tbl) if not cur_tbl.empty or not prev_tbl.empty else pd.DataFrame()
         if comp.empty:
+            return None
+        comp = comp.assign(참고=comp.apply(change_notes, axis=1)).sort_values("광고비", ascending=False)
+        comp["권장 액션"] = [recommended_actions(note) for note in comp["참고"]]
+        view = comp[["매체", "광고비", "광고비 직전", "광고비 변화(%)", "지원", "지원 직전", "지원 변화(%)",
+                     "지원 CPA", "CPA 변화(%)", "참고", "권장 액션"]].copy()
+        for column in ["광고비 변화(%)", "지원 변화(%)", "CPA 변화(%)"]:
+            view[column] = view[column].map(fmt_change)
+        return view
+
+    st.markdown("#### 🔎 전일 대비 참고 사항 (어제 vs 그제)")
+    if cov_e is None:
+        st.info("광고 데이터가 없어 전일 대비를 계산할 수 없습니다.")
+    else:
+        day_view = change_view(cov_e, cov_e, cov_e - pd.Timedelta(days=1), cov_e - pd.Timedelta(days=1))
+        if day_view is None:
             st.caption("비교할 광고비·지원 데이터가 없습니다.")
         else:
-            comp = comp.assign(참고=comp.apply(change_notes, axis=1)).sort_values("광고비", ascending=False)
-            view = comp[["매체", "광고비", "광고비 직전", "광고비 변화(%)", "지원", "지원 직전", "지원 변화(%)",
-                         "지원 CPA", "CPA 변화(%)", "참고"]].copy()
-            for column in ["광고비 변화(%)", "지원 변화(%)", "CPA 변화(%)"]:
-                view[column] = view[column].map(fmt_change)
-            show_table(view.round(1), use_container_width=True, hide_index=True)
-            st.caption("기준: 비용 증가·지원 감소·CPA 악화/개선 비율은 config.py 설정값을 따릅니다. "
-                       "표본(현재+직전 지원)이 적은 매체는 '표본 적음'으로 표시합니다.")
+            show_table(day_view.round(1), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🚨 비용은 나가는데 지원이 급감한 매체 (최근 7일 vs 직전 7일)")
-    daily_group_cost = wide[["date", "block", "비용"]].rename(columns={"block": "매체"})
-    counted_daily = counted(apps)
-    daily_group_apps = (counted_daily.groupby(["지원일", "매체그룹"]).size().rename("지원").reset_index()
-                        .rename(columns={"지원일": "date", "매체그룹": "매체"}))
-    daily_group = daily_group_cost.merge(daily_group_apps, on=["date", "매체"], how="outer").fillna({"비용": 0.0, "지원": 0})
-    # 광고 데이터 기간 밖의 지원은 기준일을 밀어내므로 제외합니다
-    cov_s, cov_e = ad_coverage(wide)
-    daily_group = daily_group[(daily_group["date"] >= cov_s) & (daily_group["date"] <= cov_e)]
-    flagged = spend_without_applicants(daily_group, window=7, min_sample=MIN_SAMPLE_FOR_INSIGHT)
-    if flagged:
-        for item in flagged:
-            st.warning(f"🟠 {item['매체']}: 최근 7일 광고비 {item['최근 비용']:,.0f}원이 집행됐지만 지원은 "
-                       f"{item['최근 지원']:,}명으로 직전 7일 {item['직전 지원']:,}명 대비 절반 이하입니다. "
-                       "광고 노출·클릭과 랜딩 상태, 집행 대상 변경 여부를 확인하세요.")
-    else:
-        st.caption("급감 매체가 없습니다.")
+    st.caption("기준: 비용 증가·지원 감소·CPA 악화/개선 비율은 config.py 설정값을 따릅니다. "
+               "표본(현재+직전 지원)이 적은 매체는 '표본 적음'으로 표시합니다.")
 
     # '데이터 업데이트 상태'와 '마케팅 액션 로그와 전후 비교' 섹션은 숨김 처리했습니다.
 

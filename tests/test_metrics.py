@@ -495,6 +495,17 @@ class ChangeNotesTest(unittest.TestCase):
         self.assertEqual(note, "특이 변화 없음")
 
 
+class RecommendedActionTest(unittest.TestCase):
+    """참고 문구를 퍼포먼스 마케터 액션으로 바꾼다"""
+
+    def test_actions_follow_notes_and_dedupe(self):
+        text = m.recommended_actions("비용 증가 · 지원 감소")
+        self.assertIn(m.ACTION_GUIDE["비용 증가"], text)
+        self.assertIn(m.ACTION_GUIDE["지원 감소"], text)
+        self.assertEqual(m.recommended_actions("특이 변화 없음"), "유지 모니터링")
+        self.assertEqual(m.recommended_actions("표본 적음 · 표본 적음"), m.ACTION_GUIDE["표본 적음"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
