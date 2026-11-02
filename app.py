@@ -61,6 +61,7 @@ from src.metrics import (
     change_notes,
     channel_quality_table,
     recommended_actions,
+    small_sample_checklist,
     compare_group_tables,
     group_period_table,
     missing_channel_rate,
@@ -725,6 +726,12 @@ def render_weekly():
     current_insight["missing_count"] = missing_count
     current_insight.setdefault("applicants_total", len(week_apps))
     render_insights(build_rule_insights(current_insight, previous_insight, INSIGHT_SETTINGS))
+    checklist = small_sample_checklist(len(week_apps), MIN_SAMPLE_FOR_INSIGHT)
+    if checklist:
+        with st.container(border=True):
+            st.markdown("**🧭 표본이 적은 주에 마케터가 챙길 일** (판단 확정 대신 점검 순서)")
+            for item in checklist:
+                st.markdown(f"- {item}")
 
     st.markdown("#### 🗂️ 최근 8주 전형 결과 (모집 시작일 기준 주차, 지원일 기준 현재 상태)")
     if setting["recruit_start"] is None:

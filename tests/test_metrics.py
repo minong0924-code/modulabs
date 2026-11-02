@@ -506,6 +506,24 @@ class RecommendedActionTest(unittest.TestCase):
         self.assertEqual(m.recommended_actions("표본 적음 · 표본 적음"), m.ACTION_GUIDE["표본 적음"])
 
 
+class SmallSampleGuidanceTest(unittest.TestCase):
+    """표본이 적은 주에도 마케터가 챙길 일을 알려 준다"""
+
+    def test_zero_applicants_with_spend_is_warned(self):
+        cur = {"cost": pd.Series({"메타": 300_000.0}), "applicants": pd.Series({"메타": 0})}
+        prev = {"cost": pd.Series({"메타": 200_000.0}), "applicants": pd.Series({"메타": 5}), "label": "직전 주"}
+        settings = {"min_cost": 100_000, "min_sample": 10, "cpa_worse": 1.3, "cpa_better": 0.7,
+                    "cost_up": 1.2, "applicant_down": 0.8, "reason_share": 0.4, "missing_alert": 0.1, "in_progress_alert": 0.5}
+        insights = m.build_rule_insights(cur, prev, settings)
+        self.assertTrue(any(i["level"] == "주의" and "지원이 0건" in i["finding"] for i in insights))
+
+    def test_checklist_only_for_small_samples(self):
+        self.assertEqual(m.small_sample_checklist(50, 10), [])
+        items = m.small_sample_checklist(3, 10)
+        self.assertGreaterEqual(len(items), 4)
+        self.assertTrue(any("10건" in item for item in items))
+
+
 if __name__ == "__main__":
     unittest.main()
 

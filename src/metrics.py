@@ -510,10 +510,19 @@ def build_rule_insights(current: dict, previous: dict, settings: dict) -> list:
             insights.append(_insight("정보", f"{group}: {compare} 집행이 없었습니다.",
                                      f"직전 광고비 {p_cost:,.0f}원 → 0원", c_app, "집행 중단 의도였는지 확인", "광고 집행 여부는 2.1 시트 기준"))
             continue
+        if c_cost > 0 and c_app == 0:
+            insights.append(_insight("주의", f"{group}: 광고비 {c_cost:,.0f}원을 썼지만 지원이 0건입니다.",
+                                     f"광고비 {p_cost:,.0f}원 → {c_cost:,.0f}원, 지원 {p_app}건 → 0건", 0,
+                                     "광고 승인·노출 상태와 랜딩·지원서 링크가 정상인지 바로 확인",
+                                     "지원은 시트 기록 기준이라 반영이 늦을 수 있음"))
+            continue
         if c_app < settings["min_sample"] or p_app < settings["min_sample"]:
-            insights.append(_insight("정보", f"{group}: 지원 표본이 적어 비율 비교를 생략했습니다.",
-                                     f"지원 {p_app}건 → {c_app}건 (최소 표본 {settings['min_sample']}건)", c_app,
-                                     "표본이 쌓인 뒤 다시 확인", "표본 부족"))
+            insights.append(_insight("정보", f"{group}: 지원 표본이 적어 CPA 비교는 보류합니다.",
+                                     f"지원 {p_app}건 → {c_app}건 (최소 표본 {settings['min_sample']}건), 광고비 {c_cost:,.0f}원",
+                                     c_app,
+                                     "대신 노출·클릭·CTR 추이와 랜딩 전환(지원서 랜딩 → 제출)을 확인하고, "
+                                     f"지원 {settings['min_sample']}건 이상 쌓이면 CPA를 비교",
+                                     "표본이 적어 CPA 변화는 우연일 수 있음"))
             continue
         if c_cost < settings["min_cost"]:
             continue
@@ -560,6 +569,28 @@ def build_rule_insights(current: dict, previous: dict, settings: dict) -> list:
     if not insights:
         insights.append(_insight("정보", f"{compare} 눈에 띄는 변화가 없습니다.", "기준값을 넘는 변화 없음", 0, "-", "기준값은 config.py 참고"))
     return insights
+
+
+def small_sample_checklist(week_applicants: int, min_sample: int) -> list:
+    """선택 주의 지원 수가 최소 표본보다 적을 때 마케터가 챙길 일을 돌려줍니다. 표본이 충분하면 빈 목록.
+
+    Args:
+        week_applicants: 선택 주 지원 수
+        min_sample: 비율 판단에 필요한 최소 표본 (config.MIN_SAMPLE_FOR_INSIGHT)
+
+    Returns:
+        체크리스트 문장 목록
+    """
+    if week_applicants >= min_sample:
+        return []
+    return [
+        "광고 노출·클릭·CTR을 매체별로 보고, 광고비는 나가는데 클릭이 적은 매체가 있는지 확인",
+        "랜딩 전환(페이지뷰 → CTA 클릭 → 지원서 랜딩 → 지원서 제출)에서 가장 많이 끊기는 구간 확인",
+        "광고비가 있는데 지원이 0건인 매체는 광고 승인·노출 상태와 지원서 링크를 먼저 점검",
+        "소재·키워드 중 클릭은 많은데 지원서 랜딩이 적은 항목이 있는지 확인 (소재 문구와 랜딩 불일치 점검)",
+        "이번 주 변경(소재·입찰·예산·타깃)이 있었다면 액션 로그에 남기고, 다음 주에 전후를 비교",
+        f"지원 {min_sample}건 이상 쌓이기 전까지는 CPA 증감을 확정 판단하지 않기",
+    ]
 
 
 def _insight(level, finding, evidence, sample, next_check, limit):
