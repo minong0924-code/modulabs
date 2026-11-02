@@ -10,6 +10,7 @@ import re
 import sys
 import time
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -19,6 +20,8 @@ logger = logging.getLogger("keep_alive")
 WAKE_BUTTON_PATTERN = re.compile(r"get this app back up", re.IGNORECASE)
 # 앱이 렌더링될 때까지 기다리는 시간 (ms)
 RENDER_TIMEOUT_MS = 120_000
+# 절전 화면의 깨우기 버튼이 나타날 때까지 기다리는 시간 (ms)
+WAKE_BUTTON_WAIT_MS = 45_000
 # 세션을 유지하기 위해 페이지를 열어 두는 시간 (초)
 HOLD_SECONDS = 30
 # 실패 시 저장할 스크린샷 경로 (워크플로에서 아티팩트로 업로드)
@@ -41,10 +44,14 @@ def keep_alive(url: str) -> bool:
             logger.info("대시보드 접속: %s", url)
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
+            # 절전 화면의 깨우기 버튼은 자바스크립트가 뜬 뒤에 나타나므로, 잠시 기다렸다가 확인합니다
             wake_button = page.get_by_role("button", name=WAKE_BUTTON_PATTERN)
-            if wake_button.count() > 0:
+            try:
+                wake_button.first.wait_for(state="visible", timeout=WAKE_BUTTON_WAIT_MS)
                 logger.info("절전 상태 감지, 앱 깨우기 버튼 클릭")
                 wake_button.first.click()
+            except PlaywrightTimeoutError:
+                logger.info("깨우기 버튼 없음 (이미 실행 중이거나 화면 로딩 중)")
 
             page.wait_for_selector('[data-testid="stApp"]', timeout=RENDER_TIMEOUT_MS)
             logger.info("앱 렌더링 확인, %d초간 세션 유지", HOLD_SECONDS)
