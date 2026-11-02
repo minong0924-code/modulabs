@@ -10,8 +10,13 @@
 import pandas as pd
 
 from src.config import (
+    APPLICANT_DOWN_RATIO,
     CHANNEL_GROUP_MAP,
+    COST_UP_RATIO,
+    CPA_BETTER_RATIO,
+    CPA_WORSE_RATIO,
     MATCHED_AD_GROUPS,
+    MIN_SAMPLE_FOR_INSIGHT,
     PAID_CHANNEL_GROUPS,
     WEEK_START_WEEKDAY,
 )
@@ -658,6 +663,48 @@ def compare_group_tables(current: pd.DataFrame, previous: pd.DataFrame) -> pd.Da
     out["지원 CPA 직전"] = prev_cpa
     out["CPA 변화(%)"] = [pct_change(c, p) for c, p in zip(cur_cpa, prev_cpa)]
     return out.reset_index().rename(columns={"index": "매체"})
+
+
+def change_notes(row) -> str:
+    """직전 기간 대비 매체 한 줄의 변화를 읽을 수 있는 참고 문구로 바꿉니다.
+
+    기준값은 config.py의 비용 증가·지원 감소·CPA 악화/개선 비율을 씁니다.
+    문구가 없으면 '특이 변화 없음'을 돌려줍니다. 표본(현재+직전 지원)이 적으면 앞에 '표본 적음'을 붙입니다.
+
+    Args:
+        row: compare_group_tables() 결과의 한 행 (광고비, 광고비 직전, 지원, 지원 직전, 지원 CPA, 지원 CPA 직전)
+
+    Returns:
+        참고 문구 문자열 (여러 개면 ' · '로 이어 붙임)
+    """
+    notes = []
+    cost, cost_prev = float(row["광고비"]), float(row["광고비 직전"])
+    apps_now, apps_prev = int(row["지원"]), int(row["지원 직전"])
+    if cost_prev == 0 and cost > 0:
+        notes.append("신규 집행")
+    elif cost_prev > 0 and cost == 0:
+        notes.append("집행 중단")
+    elif cost_prev > 0 and cost / cost_prev >= COST_UP_RATIO:
+        notes.append("비용 증가")
+
+    if apps_prev == 0 and apps_now > 0:
+        notes.append("지원 신규 발생")
+    elif apps_prev > 0 and apps_now / apps_prev <= APPLICANT_DOWN_RATIO:
+        notes.append("지원 감소")
+    elif apps_prev > 0 and apps_now / apps_prev >= 1 / APPLICANT_DOWN_RATIO:
+        notes.append("지원 증가")
+
+    cpa_now, cpa_prev = row["지원 CPA"], row["지원 CPA 직전"]
+    if pd.notna(cpa_now) and pd.notna(cpa_prev) and cpa_prev > 0:
+        ratio = cpa_now / cpa_prev
+        if ratio >= CPA_WORSE_RATIO:
+            notes.append("CPA 악화")
+        elif ratio <= CPA_BETTER_RATIO:
+            notes.append("CPA 개선")
+
+    if apps_now + apps_prev < MIN_SAMPLE_FOR_INSIGHT:
+        notes.insert(0, "표본 적음")
+    return " · ".join(notes) if notes else "특이 변화 없음"
 
 
 def reason_concentration(apps: pd.DataFrame) -> dict:

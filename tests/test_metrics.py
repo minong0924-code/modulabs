@@ -468,6 +468,33 @@ class CarryOverInclusionTest(unittest.TestCase):
         self.assertEqual(s["지원"], 2)  # 사전·전기수 이관 a 와 그룹 표시 없는 타 과정 이관 b 모두 포함
 
 
+class ChangeNotesTest(unittest.TestCase):
+    """직전 대비 참고 문구: 급감이 아니어도 비용·지원·CPA 변화를 알려 준다"""
+
+    def _row(self, **kw):
+        base = {"광고비": 0.0, "광고비 직전": 0.0, "지원": 0, "지원 직전": 0,
+                "지원 CPA": float("nan"), "지원 CPA 직전": float("nan")}
+        base.update(kw)
+        return pd.Series(base)
+
+    def test_cost_up_with_applicant_growth_is_noted(self):
+        note = m.change_notes(self._row(**{"광고비": 300_000.0, "광고비 직전": 100_000.0, "지원": 20, "지원 직전": 10,
+                                           "지원 CPA": 15_000.0, "지원 CPA 직전": 10_000.0}))
+        self.assertIn("비용 증가", note)
+        self.assertIn("지원 증가", note)
+        self.assertIn("CPA 악화", note)
+
+    def test_new_and_stopped_spend(self):
+        self.assertIn("신규 집행", m.change_notes(self._row(**{"광고비": 50_000.0, "지원": 5, "지원 직전": 5})))
+        self.assertIn("집행 중단", m.change_notes(self._row(**{"광고비 직전": 50_000.0, "지원": 5, "지원 직전": 5})))
+
+    def test_small_sample_is_flagged_and_stable_is_plain(self):
+        self.assertTrue(m.change_notes(self._row(**{"광고비": 1.0, "지원": 1, "지원 직전": 1})).startswith("표본 적음"))
+        note = m.change_notes(self._row(**{"광고비": 100_000.0, "광고비 직전": 100_000.0, "지원": 40, "지원 직전": 40,
+                                           "지원 CPA": 2_500.0, "지원 CPA 직전": 2_500.0}))
+        self.assertEqual(note, "특이 변화 없음")
+
+
 if __name__ == "__main__":
     unittest.main()
 

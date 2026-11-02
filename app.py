@@ -58,6 +58,7 @@ from src.metrics import (
     ad_coverage,
     application_mask,
     build_rule_insights,
+    change_notes,
     channel_quality_table,
     compare_group_tables,
     group_period_table,
@@ -802,6 +803,28 @@ def render_daily():
         table[column] = table[column].map(fmt_change)
     # 과거 날짜부터 오름차순으로 표시합니다 (YYYY-MM-DD 문자열이라 사전순 = 날짜순)
     show_table(table.sort_values("date", ascending=True).round(1), use_container_width=True, hide_index=True)
+
+    st.markdown("#### 🔎 직전 7일 대비 참고 사항 (최근 7일 vs 직전 7일)")
+    cov_s, cov_e = ad_coverage(wide)
+    if cov_e is None:
+        st.info("광고 데이터가 없어 직전 대비를 계산할 수 없습니다.")
+    else:
+        cur_clip = clip_period(cov_e - pd.Timedelta(days=6), cov_e, cov_s, cov_e)
+        prev_clip = clip_period(cov_e - pd.Timedelta(days=13), cov_e - pd.Timedelta(days=7), cov_s, cov_e)
+        cur_tbl = group_period_table(apps, wide, *cur_clip) if cur_clip[0] is not None else pd.DataFrame()
+        prev_tbl = group_period_table(apps, wide, *prev_clip) if prev_clip[0] is not None else pd.DataFrame()
+        comp = compare_group_tables(cur_tbl, prev_tbl) if not cur_tbl.empty or not prev_tbl.empty else pd.DataFrame()
+        if comp.empty:
+            st.caption("비교할 광고비·지원 데이터가 없습니다.")
+        else:
+            comp = comp.assign(참고=comp.apply(change_notes, axis=1)).sort_values("광고비", ascending=False)
+            view = comp[["매체", "광고비", "광고비 직전", "광고비 변화(%)", "지원", "지원 직전", "지원 변화(%)",
+                         "지원 CPA", "CPA 변화(%)", "참고"]].copy()
+            for column in ["광고비 변화(%)", "지원 변화(%)", "CPA 변화(%)"]:
+                view[column] = view[column].map(fmt_change)
+            show_table(view.round(1), use_container_width=True, hide_index=True)
+            st.caption("기준: 비용 증가·지원 감소·CPA 악화/개선 비율은 config.py 설정값을 따릅니다. "
+                       "표본(현재+직전 지원)이 적은 매체는 '표본 적음'으로 표시합니다.")
 
     st.markdown("#### 🚨 비용은 나가는데 지원이 급감한 매체 (최근 7일 vs 직전 7일)")
     daily_group_cost = wide[["date", "block", "비용"]].rename(columns={"block": "매체"})
