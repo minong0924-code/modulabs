@@ -524,6 +524,35 @@ class SmallSampleGuidanceTest(unittest.TestCase):
         self.assertTrue(any("10건" in item for item in items))
 
 
+class BestWindowChangeTest(unittest.TestCase):
+    """전일 표본이 모자라면 최근 3일·7일로 넓혀 표본이 충분한 기간을 쓴다"""
+
+    def _data(self):
+        rows = []
+        counts = [("2026-10-26", 4), ("2026-10-27", 4), ("2026-10-28", 4), ("2026-10-29", 3), ("2026-10-30", 3),
+                  ("2026-10-31", 3), ("2026-11-01", 1), ("2026-11-02", 1)]
+        for date, n in counts:
+            for i in range(n):
+                rows.append({"신청자 이름": f"m{date}{i}", "일자": date, "유입 채널": "메타", "서류 합격": "O"})
+        apps = m.prepare_applicants(pd.DataFrame(rows))
+        dates = [d for d, _ in counts]
+        wide = pd.DataFrame({"date": pd.to_datetime(dates), "block": "메타", "비용": [100_000.0] * len(dates)})
+        return apps, wide
+
+    def test_falls_back_to_longer_window_when_day_sample_is_small(self):
+        apps, wide = self._data()
+        view = m.best_window_changes(apps, wide, "2026-11-02", "2026-10-26", "2026-11-02", windows=(1, 3, 7), min_sample=10)
+        self.assertEqual(len(view), 1)
+        # 전일·3일 모두 표본이 모자라 7일 기준으로 표시하되, 직전 표본이 10건 미만이라 '표본 부족'으로 표시
+        self.assertTrue(view.iloc[0]["비교 기준"].startswith("표본 부족"))
+
+    def test_uses_short_window_when_sample_is_enough(self):
+        apps, wide = self._data()
+        view = m.best_window_changes(apps, wide, "2026-11-02", "2026-10-26", "2026-11-02", windows=(1, 3, 7), min_sample=3)
+        # 전일은 지원 1건이라 표본이 모자라고, 최근 3일(현재 5건·직전 10건)이 처음으로 충족
+        self.assertEqual(view.iloc[0]["비교 기준"], "최근 3일 vs 직전 3일")
+
+
 if __name__ == "__main__":
     unittest.main()
 

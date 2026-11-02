@@ -58,9 +58,8 @@ from src.metrics import (
     ad_coverage,
     application_mask,
     build_rule_insights,
-    change_notes,
+    best_window_changes,
     channel_quality_table,
-    recommended_actions,
     small_sample_checklist,
     compare_group_tables,
     group_period_table,
@@ -819,36 +818,20 @@ def render_daily():
     show_table(table.sort_values("date", ascending=True).round(1), use_container_width=True, hide_index=True)
 
     cov_s, cov_e = ad_coverage(wide)
-
-    def change_view(cur_start, cur_end, prev_start, prev_end):
-        """두 기간의 매체별 광고비·지원·CPA 변화와 참고 문구·권장 액션 표를 만듭니다. 비교할 데이터가 없으면 None."""
-        cur_clip = clip_period(cur_start, cur_end, cov_s, cov_e)
-        prev_clip = clip_period(prev_start, prev_end, cov_s, cov_e)
-        cur_tbl = group_period_table(apps, wide, *cur_clip) if cur_clip[0] is not None else pd.DataFrame()
-        prev_tbl = group_period_table(apps, wide, *prev_clip) if prev_clip[0] is not None else pd.DataFrame()
-        comp = compare_group_tables(cur_tbl, prev_tbl) if not cur_tbl.empty or not prev_tbl.empty else pd.DataFrame()
-        if comp.empty:
-            return None
-        comp = comp.assign(참고=comp.apply(change_notes, axis=1)).sort_values("광고비", ascending=False)
-        comp["권장 액션"] = [recommended_actions(note) for note in comp["참고"]]
-        view = comp[["매체", "광고비", "광고비 직전", "광고비 변화(%)", "지원", "지원 직전", "지원 변화(%)",
-                     "지원 CPA", "CPA 변화(%)", "참고", "권장 액션"]].copy()
-        for column in ["광고비 변화(%)", "지원 변화(%)", "CPA 변화(%)"]:
-            view[column] = view[column].map(fmt_change)
-        return view
-
     st.markdown("#### 🔎 전일 대비 참고 사항 (어제 vs 그제)")
+    st.caption("매체별로 지원 표본(현재·직전 각 10건 이상)이 확보되는 가장 짧은 기간을 씁니다. "
+               "전일 표본이 모자라면 최근 3일, 그다음 최근 7일로 넓혀 비교합니다. "
+               "어느 기간도 표본이 모자라면 '표본 부족'으로 표시합니다.")
     if cov_e is None:
         st.info("광고 데이터가 없어 전일 대비를 계산할 수 없습니다.")
     else:
-        day_view = change_view(cov_e, cov_e, cov_e - pd.Timedelta(days=1), cov_e - pd.Timedelta(days=1))
-        if day_view is None:
+        view = best_window_changes(apps, wide, cov_e, cov_s, cov_e, windows=(1, 3, 7), min_sample=MIN_SAMPLE_FOR_INSIGHT)
+        if view.empty:
             st.caption("비교할 광고비·지원 데이터가 없습니다.")
         else:
-            show_table(day_view.round(1), use_container_width=True, hide_index=True)
-
-    st.caption("기준: 비용 증가·지원 감소·CPA 악화/개선 비율은 config.py 설정값을 따릅니다. "
-               "표본(현재+직전 지원)이 적은 매체는 '표본 적음'으로 표시합니다.")
+            for column in ["광고비 변화(%)", "지원 변화(%)", "CPA 변화(%)"]:
+                view[column] = view[column].map(fmt_change)
+            show_table(view.round(1), use_container_width=True, hide_index=True)
 
     # '데이터 업데이트 상태'와 '마케팅 액션 로그와 전후 비교' 섹션은 숨김 처리했습니다.
 
