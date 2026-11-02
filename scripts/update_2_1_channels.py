@@ -62,6 +62,24 @@ def ga_counts(bq, course, start, end):
     return {k: len(v) for k, v in out.items()}
 
 
+def parse_raw_date(text):
+    """대행사 raw의 일자 문자열을 날짜로 바꿉니다. '2026-10-29'와 '2026. 10. 29' 두 형식을 모두 읽습니다.
+
+    Args:
+        text: raw 시트 A열 값
+
+    Returns:
+        datetime.date (형식이 맞지 않으면 None)
+    """
+    match = re.fullmatch(r"\s*(\d{4})\D+(\d{1,2})\D+(\d{1,2})\.?\s*", str(text))
+    if not match:
+        return None
+    try:
+        return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
 def raw_media(course, start, end, gs):
     """대행사 raw에서 과정·날짜별 매체 비용·노출·클릭 집계.
     매체는 raw의 '매체' 열(23번), 비용은 '비용(VAT포함, 마크업포함)' 열(16번)을 그대로 씁니다."""
@@ -73,7 +91,8 @@ def raw_media(course, start, end, gs):
     keys = [k.lower() for k in RAW_KEYS[course]]
     for r in raw[1:]:
         if len(r) < 24 or not r[0][:4] == "2026": continue
-        d = dt.date.fromisoformat(r[0])
+        d = parse_raw_date(r[0])
+        if d is None: continue
         if not (start <= d <= end): continue
         if not any(k in r[2].lower() for k in keys): continue
         blk = RAW_MEDIA.get(r[23].strip())
