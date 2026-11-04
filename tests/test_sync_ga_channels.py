@@ -73,5 +73,25 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(result[0], [])
 
 
+class ChatGptChannelTest(unittest.TestCase):
+    """ChatGPT 광고(ChatGPT / da)를 채널로 묶고 광고별 캠페인·소재를 기록하는지 확인"""
+
+    def test_chatgpt_da_is_its_own_channel(self):
+        """소스가 ChatGPT, 매체가 da이면 'ChatGPT DA'로 분류한다 (대소문자 무관)"""
+        self.assertEqual(s.classify_channel("ChatGPT", "da", "aiintelligence3rd_agentdata_image_261102"), "ChatGPT DA")
+        self.assertEqual(s.classify_channel("chatgpt", "DA", ""), "ChatGPT DA")
+
+    def test_chatgpt_organic_keeps_llm_channel(self):
+        """기존 자연 유입(chatgpt.com)은 기존 'LLM' 채널을 유지한다"""
+        self.assertEqual(s.classify_channel("chatgpt.com", "referral", ""), "LLM(GPT, 퍼플렉시티 등)")
+
+    def test_chatgpt_records_campaign_and_content(self):
+        """ChatGPT DA 행은 캠페인 구분과 유입 소재에 GA 캠페인·콘텐츠를 그대로 기록한다"""
+        match = {"session_campaign": "aiintelligence3rd_agentdata_image_261102",
+                 "session_content": "conversion_aiintelligence3rd_X", "session_term": "(not set)"}
+        self.assertEqual(s.material_for("ChatGPT DA", match), "conversion_aiintelligence3rd_X")
+        self.assertEqual(s.campaign_for("ChatGPT DA", match), "aiintelligence3rd_agentdata_image_261102")
+
+
 if __name__ == "__main__":
     unittest.main()

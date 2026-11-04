@@ -20,7 +20,7 @@ BQ_TABLE = f"{BQ_PROJECT}.Modulabs_internal_DB.dash_daily_inflow"
 BQ_SCOPES = ["https://www.googleapis.com/auth/bigquery"]
 
 # 화면에 쓰는 매체 순서 (틱톡은 raw 미확보로 제외, 시트의 '페이드(총합)'은 합계 행이라 제외)
-BLOCK_ORDER = ["오가닉", "메타", "구글 DA", "구글 SA", "네이버 SA", "카카오 DA", "타게팅게이츠", "기타"]
+BLOCK_ORDER = ["오가닉", "메타", "구글 DA", "구글 SA", "네이버 SA", "카카오 DA", "ChatGPT DA", "타게팅게이츠", "기타"]
 # 집계 대상 지표 (시트 지표 이름)
 METRICS = ["비용", "노출", "클릭", "페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
 

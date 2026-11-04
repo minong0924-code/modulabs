@@ -214,6 +214,9 @@ def classify_channel(source, medium, campaign):
     Returns:
         유입 채널 이름 또는 None
     """
+    if (source or "").lower() == "chatgpt" and (medium or "").lower() == "da":
+        # ChatGPT 광고는 광고별(캠페인·소재)로 돌리므로 별도 채널로 묶고 캠페인·소재를 기록
+        return "ChatGPT DA"
     if (source, medium) == ("google", "cpc"):
         # 구글 광고는 캠페인명으로 DA와 검색광고(SA)를 구분
         if re.search(r"pmax|dgen", campaign or "", re.IGNORECASE):
@@ -314,7 +317,7 @@ def material_for(channel, match):
     if channel == "네이버 SA":
         # 네이버 SA의 키워드 뒤에 붙는 광고 ID(_nad-…)는 제외
         return match["session_term"].split("_nad-")[0]
-    if channel in ("커뮤니티/버티컬", "카카오 플러스친구"):
+    if channel in ("커뮤니티/버티컬", "카카오 플러스친구", "ChatGPT DA"):
         # 광고 콘텐츠(GA utm_content)를 가공하지 않고 그대로 기록
         return match["session_content"]
     return ""
@@ -330,7 +333,7 @@ def campaign_for(channel, match):
     Returns:
         기록할 캠페인 문자열 (기록하지 않는 채널이면 빈 문자열)
     """
-    if channel in ("메타", "구글 DA", "카카오 DA"):
+    if channel in ("메타", "구글 DA", "카카오 DA", "ChatGPT DA"):
         campaign = match["session_campaign"] or ""
         if campaign in GA_DEFAULT_CAMPAIGNS:
             # GA가 붙인 기본값(유입 원본 없음)은 캠페인으로 기록하지 않음
