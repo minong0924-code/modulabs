@@ -15,11 +15,17 @@ PATHS = {"ai_agent": ["/ai-agent"], "ai_data_intel": ["/ai-data"], "private_ai":
 RAW_KEYS = {"ai_agent": ["에이전트", "agent"], "ai_data_intel": ["인텔리전스", "intelligence"], "private_ai": ["프라이빗", "private"],
             "data_analysis": ["재직자(데이터)", "edata"], "planning_dev": ["재직자(기획개발)", "egigae"], "ai_researcher": ["리서처", "researcher", "airesea"]}
 # 대행사 raw 캠페인유형 -> 2.1 매체 블록 (배율 포함)
-RAW_MEDIA = {"메타": "메타", "구글 실적최대화": "구글 DA", "구글디멘드젠": "구글 DA", "구글 검색": "구글 SA", "네이버 검색": "네이버 SA", "카카오": "카카오 DA", "카카오(무상캐시)": "카카오 DA", "타겟팅게이츠": "타게팅게이츠"}
+RAW_MEDIA = {"메타": "메타", "구글 실적최대화": "구글 DA", "구글디멘드젠": "구글 DA", "구글 검색": "구글 SA", "네이버 검색": "네이버 SA", "카카오": "카카오 DA", "카카오(무상캐시)": "카카오 DA", "타겟팅게이츠": "타게팅게이츠", "챗지피티": "ChatGPT DA"}
 GA_METRICS = ["페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
 MEDIA_METRICS = ["비용", "노출", "클릭"]
 AGENCY = {"ai_researcher": "1dxIAJNq_RpJQGWJDsqpzpFZK6VcnhdNSeyR1A8A_vu4", "ai_agent": "1Z_7mnZTkFcrj5eHVeGu7LtqSTOB7696E0XxaRzaZVuQ", "ai_data_intel": "1Z_7mnZTkFcrj5eHVeGu7LtqSTOB7696E0XxaRzaZVuQ", "private_ai": "1Z_7mnZTkFcrj5eHVeGu7LtqSTOB7696E0XxaRzaZVuQ", "data_analysis": "1vYMBImjzZVWTsnjn9wJLUdpZWvra_OpAoFRIwTrdTwM", "planning_dev": "1vYMBImjzZVWTsnjn9wJLUdpZWvra_OpAoFRIwTrdTwM"}
 EVENT = {"페이지뷰": "page_view", "CTA 클릭": "Apply_click_cta", "지원서 랜딩": "Apply_step1", "지원서 제출": "Apply_step2"}
+# ChatGPT 광고 블록 (GA 소스 ChatGPT / da, 대행사 raw 매체 '챗지피티')
+CHATGPT_BLOCK = "ChatGPT DA"
+# 블록 한 개의 열 구성 (비용부터 지원서 제출까지, 전환율은 바로 앞 지표 대비)
+BLOCK_HEADERS = ["비용", "노출", "클릭", "클릭율", "페이지뷰", "CTA 클릭", "전환율", "지원서 랜딩", "전환율", "지원서 제출", "전환율"]
+# 페이드(총합) 블록이 더하는 지표 (클릭율·전환율은 합계에서 다시 계산)
+PAID_SUM_METRICS = ["비용", "노출", "클릭", "페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
 
 
 def block_of(source, medium, campaign):
@@ -29,6 +35,7 @@ def block_of(source, medium, campaign):
         if "pmax" in c or "dgen" in c: return "구글 DA"
         if "b2b" in c: return None
         return "구글 SA"
+    if (source or "").lower() == "chatgpt" and (medium or "").lower() == "da": return CHATGPT_BLOCK
     if (source, medium) == ("naver", "cpc"): return "네이버 SA"
     if (source, medium) == ("kakao", "cpc"): return "카카오 DA"
     if (source, medium) == ("meta", "da"): return "메타"
@@ -112,11 +119,88 @@ def cohort_window(grid):
     return (min(dates), max(dates)) if dates else None
 
 
+def col_letter(index):
+    """0-based 열 번호를 A1 표기 열 문자로 바꿉니다 (0 -> A, 26 -> AA).
+
+    Args:
+        index: 0-based 열 번호
+
+    Returns:
+        열 문자 문자열
+    """
+    text, n = "", index + 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        text = chr(65 + rem) + text
+    return text
+
+
+def ensure_chatgpt_block(ws, grid):
+    """2.1 시트 맨 오른쪽에 ChatGPT DA 블록을 만들고 페이드(총합) 합계에 포함합니다. 이미 있으면 아무것도 하지 않습니다.
+
+    블록 구성은 메타·구글 DA 블록과 같습니다(비용·노출·클릭·클릭율·페이지뷰·CTA·랜딩·제출, 전환율은 앞 지표 대비).
+    데이터 행(5행부터)은 수식으로, 합계 행은 SUM으로 채웁니다. 비용·노출·클릭·GA 지표 값은 이후 run_cohort가 채웁니다.
+
+    Args:
+        ws: 2.1 일자별 유입현황 워크시트
+        grid: FORMULA 모드로 읽은 시트 값 (행 리스트)
+
+    Returns:
+        새로 만들었으면 True
+    """
+    if CHATGPT_BLOCK in [str(v).strip() for v in grid[1]]:
+        return False
+    start = max(len(grid[1]), len(grid[3]))  # 현재 마지막 열 다음 (0-based)
+    width = len(BLOCK_HEADERS)
+    if ws.col_count < start + width:
+        ws.add_cols(start + width - ws.col_count)
+    col = lambda k: col_letter(start + k)
+    last_row = len(grid)  # 합계 행 번호 (1-based)
+    data_rows = [r for r in range(5, last_row) if re.fullmatch(r"\d+(\.\d+)?", str(grid[r - 1][1]).strip())]
+    # 전환율 열은 (분자, 분모) 열 번호로 정의: 바로 앞 지표 대비
+    conv = {6: (5, 4), 8: (7, 5), 10: (9, 7)}
+    sum_cols = (0, 1, 2, 4, 5, 7, 9)
+
+    updates = [
+        {"range": f"{col(0)}2:{col(width - 1)}2", "values": [[CHATGPT_BLOCK] + [""] * (width - 1)]},
+        {"range": f"{col(0)}3:{col(width - 1)}3", "values": [["매체", "", "", "", "GA 기준"] + [""] * (width - 5)]},
+        {"range": f"{col(0)}4:{col(width - 1)}4", "values": [BLOCK_HEADERS]},
+    ]
+    for r in data_rows + [last_row]:
+        values = [""] * width
+        for k in sum_cols:
+            values[k] = f"=SUM({col(k)}5:{col(k)}{last_row - 1})" if r == last_row else ""
+        values[3] = f"=IFERROR({col(2)}{r}/{col(1)}{r},0)"
+        for k, (num, den) in conv.items():
+            values[k] = f"=IFERROR({col(num)}{r}/{col(den)}{r},0)"
+        updates.append({"range": f"{col(0)}{r}:{col(width - 1)}{r}", "values": [values]})
+
+    # 페이드(총합) 열의 합계 수식에 새 블록을 더합니다
+    paid_start = grid[1].index("페이드(총합)") if "페이드(총합)" in [str(v).strip() for v in grid[1]] else None
+    if paid_start is not None:
+        for metric in PAID_SUM_METRICS:
+            j = next((i for i in range(paid_start, len(grid[3])) if str(grid[3][i]).strip() == metric), None)
+            if j is None:
+                continue
+            refs = re.findall(r"([A-Z]+)\d+", grid[4][j])  # 현재 수식의 열 목록 (예: =SUM(U5,AF5,AQ5,BB5))
+            refs = [ref for ref in refs if ref != col(BLOCK_HEADERS.index(metric))]
+            refs.append(col(BLOCK_HEADERS.index(metric)))
+            for r in data_rows:
+                updates.append({"range": f"{col_letter(j)}{r}",
+                                "values": [[f"=SUM({','.join(f'{ref}{r}' for ref in refs)})"]]})
+    ws.batch_update(updates, value_input_option="USER_ENTERED")
+    return True
+
+
 def run_cohort(cid, sem, start, end, gs, bq, apply):
     sh = gs.open_by_key(COURSES[cid]["cohorts"][sem]["sheet_id"])
     ws = sh.worksheet("2.1 일자별 유입현황")
     grid = [[str(c) for c in r] for r in ws.get_all_values(value_render_option="FORMULA")]
     time.sleep(3)
+    if apply and ensure_chatgpt_block(ws, grid):
+        print(f"{cid} {sem}기: {CHATGPT_BLOCK} 블록 추가", flush=True)
+        time.sleep(3)
+        grid = [[str(c) for c in r] for r in ws.get_all_values(value_render_option="FORMULA")]
     ga = ga_counts(bq, cid, start, end)
     media = raw_media(cid, start, end, gs)
     # 블록 시작 열 (행 2의 블록 이름) -> 행 4의 지표 이름으로 열 위치 찾기
@@ -126,7 +210,7 @@ def run_cohort(cid, sem, start, end, gs, bq, apply):
     for idx, (c0, name) in enumerate(starts):
         c1 = starts[idx + 1][0] if idx + 1 < len(starts) else len(h4)
         cols[name.strip()] = {h4[j].strip(): j for j in range(c0, c1) if h4[j].strip()}
-    KNOWN = {"오가닉", "메타", "구글 DA", "구글 SA", "네이버 SA", "카카오 DA", "타게팅게이츠", "틱톡"}
+    KNOWN = {"오가닉", "메타", "구글 DA", "구글 SA", "네이버 SA", "카카오 DA", "타게팅게이츠", "틱톡", CHATGPT_BLOCK}
     def canon(name):
         if name.startswith("카카오"): return "카카오 DA"  # 카카오 모먼트·비즈보드 모두 카카오 DA
         if name.startswith("타게팅") or name.startswith("타겟팅"): return "타게팅게이츠"
