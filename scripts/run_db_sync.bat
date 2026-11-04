@@ -12,4 +12,4 @@ if not %errorlevel%==0 set RESULT=1
 echo [%date% %time%] DB 추출 종료 (exit %RESULT%) >> logs\db_sync.log
 if %RESULT%==0 (set SYNC_STATUS=success) else (set SYNC_STATUS=failure)
 python scripts\notify_slack.py --title "DB 추출 (PC)" --status %SYNC_STATUS% --detail "로그 파일: C:\Users\Admin\workspace\mkt_dashboard\logs\db_sync.log" >> logs\db_sync.log 2>&1
-python scripts\notify_email.py --title "DB 추출 + 시트 기록 (PC)" --status %SYNC_STATUS% --detail "로그 파일: C:\Users\Admin\workspace\mkt_dashboard\logs\db_sync.log" >> logs\db_sync.log 2>&1
+python scripts\notify_email.py --title "DB 추출 + 시트 기록 (PC)" --status %SYNC_STATUS% --detail "로그 파일: C:\Users\Admin\workspace\mkt_dashboard\logs\db_sync.log" --detail-file logs\manual_check.txt >> logs\db_sync.log 2>&1

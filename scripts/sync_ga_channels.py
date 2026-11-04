@@ -4,6 +4,10 @@
   1. sql/ga_applicant_match.sql을 날짜별로 실행해 내부 지원자 DB와 GA 유입 정보를 매칭
   2. 과정/기수별 시트를 읽어 같은 날짜·같은 이름의 행을 찾음
   3. 비어 있는 유입 채널/소재/캠페인 칸만 채움 (사람이 입력한 값은 덮어쓰지 않음)
+  4. 명단 대조(PG 기준): PG에 새로 생긴 신청자(다른 과정 이관 입과 등)는 행을 추가하고, 시트에 있지만 PG에서 사라진
+     신청자는 행을 지우지 않고 사유 칸에 '이관'을 적음 (사유가 이미 있으면 그대로 둠)
+     기본 기간은 반영 시작일(2026-10-28)부터 어제까지 전체입니다.
+     BigQuery는 GA 유입 정보 보강에만 쓰며, 사람이 확인할 항목은 logs/manual_check.txt에 기록합니다.
 
 기본값은 드라이런(시트 변경 없음)입니다. --apply 를 붙여야 실제로 기록합니다.
 """
@@ -20,6 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import gspread
+import psycopg
 from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 from google.oauth2.service_account import Credentials
@@ -29,8 +34,18 @@ from gspread.utils import rowcol_to_a1
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SECRETS_PATH = PROJECT_ROOT / ".streamlit" / "secrets.toml"
 sys.path.insert(0, str(PROJECT_ROOT))
+# 같은 폴더의 DB 추출 모듈(sync_applicants_from_db)을 import하기 위해 scripts 폴더도 경로에 추가
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from src.config import COURSE_MAPPING, COURSES  # noqa: E402
+from sync_applicants_from_db import EXTRACT_SQL, ENV_PATH, load_env  # noqa: E402
+
+# PG 기준 명단 조회: DB 추출 조건과 같되, 생년월일이 없는 신청자도 포함 (연령대만 비움)
+PG_APPLICANT_SQL = EXTRACT_SQL.replace("  AND p.birth IS NOT NULL\n", "")
+assert PG_APPLICANT_SQL != EXTRACT_SQL, "PG 추출 SQL에서 생년월일 조건을 찾지 못했습니다."
+
+# 매일 사람이 확인해야 할 항목을 적는 파일 (메일 알림에 포함)
+HUMAN_CHECK_PATH = PROJECT_ROOT / "logs" / "manual_check.txt"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("sync_ga_channels")
@@ -52,13 +67,17 @@ TARGET_HEADERS = {
     "campaign": "캠페인 구분",
     "age": "연령대",
     "note": "비고",
+    "reason": "사유",
 }
 
 # 헤더 행 자동 탐지 시 반드시 있어야 하는 컬럼
 REQUIRED_HEADER_TITLES = ("일자", "신청자 이름")
 
 # 시트에 없을 수 있어서 없으면 건너뛰는 컬럼
-OPTIONAL_FIELDS = {"campaign", "age", "note"}
+OPTIONAL_FIELDS = {"campaign", "age", "note", "reason"}
+
+# DB 명단에서 사라진 신청자(다른 과정으로 이관 등)의 사유 칸에 적는 값. 행은 삭제하지 않습니다.
+TRANSFER_REASON = "이관"
 
 # 이 날짜 이전 신청자는 기록하지 않음 (기존 시트 데이터 보호, 신규 신청분부터 반영)
 APPLY_START_DATE = dt.date(2026, 10, 28)
@@ -361,6 +380,32 @@ def fetch_matched_rows(bq_client, target_date):
     return [dict(row.items()) for row in rows]
 
 
+def fetch_pg_applicants():
+    """PG에서 지원자 명단을 가져와 과정 명단의 기준으로 씁니다 (BigQuery 적재 지연·과정 변경을 반영하기 위함).
+
+    Returns:
+        신청 건마다 dict 목록 (apply_id 중복 제거). date 키는 한국 시각 신청일입니다.
+    """
+    env = load_env(ENV_PATH)
+    rows = {}
+    with psycopg.connect(
+        host=env["PG_HOST"], port=int(env["PG_PORT"]), dbname=env["PG_DATABASE"],
+        user=env["PG_USER"], password=env["PG_PASSWORD"], connect_timeout=15,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET TIME ZONE 'Asia/Seoul'")
+            cur.execute(PG_APPLICANT_SQL)
+            columns = [c.name for c in cur.description]
+            for values in cur.fetchall():
+                row = dict(zip(columns, values))
+                if row["apply_id"] in rows:
+                    continue
+                row["date"] = row["submitted_at"].date()
+                rows[row["apply_id"]] = row
+    logger.info("PG 지원자 명단 %d건", len(rows))
+    return list(rows.values())
+
+
 def find_header_row(sheet_values, default_row):
     """헤더 행을 찾습니다. 설정된 행에 필수 컬럼이 없으면 상단 15행에서 다시 찾습니다.
 
@@ -465,8 +510,12 @@ def can_write_ga(current, value, field, refresh, last_auto):
     return last_auto is not None and current == last_auto
 
 
-def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None, course_id=None):
+def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None, course_id=None,
+                  db_keys=None, check_start=None, check_end=None, only_names=None):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
+
+    db_keys가 주어지면 명단 대조도 합니다. 기간 안의 시트 행 중 DB에 없는 (이름, 신청일)은
+    '사라진 신청자'로 보고 사유 칸에 '이관'을 적습니다. 행은 지우지 않으며, 사유가 이미 있으면 건드리지 않습니다.
 
     Args:
         sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
@@ -475,11 +524,15 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         skip_fields: 기록하지 않을 필드 집합 (예: 재직자 과정의 campaign)
         auto_log: {(이름, 신청일, 항목): 마지막 자동 기록 값} dict
         course_id: 이 시트가 속한 과정 ID (다른 과정 캠페인 유입 여부 판단에 사용)
+        db_keys: DB에 있는 (이름, 신청일) 집합. None이면 명단 대조를 하지 않음
+        check_start: 명단 대조 시작일 (datetime.date, 포함)
+        check_end: 명단 대조 종료일 (datetime.date, 포함)
+        only_names: 이 이름들만 처리 (None이면 전체). 특정 신청자만 수동으로 반영할 때 사용
 
     Returns:
-        (updates, skipped, written, format_src, appended_rows): gspread batch_update용 dict 목록,
+        (updates, skipped, written, format_src, appended_rows, transferred): gspread batch_update용 dict 목록,
         건너뛴 사유 목록, 자동 기록 로그에 남길 항목 목록, 서식을 복사할 기존 마지막 행 번호,
-        새로 추가할 행 번호 목록
+        새로 추가할 행 번호 목록, 이관으로 표시한 행 목록
     """
     auto_log = auto_log or {}
     header_row = find_header_row(sheet_values, header_row)
@@ -516,6 +569,8 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
     appended_rows = []
     for match in matched_rows:
         name = match["name"].strip()
+        if only_names and name not in only_names:
+            continue
         date = parse_date(match["db_submitted_at"])
         ga_on = match.get("_ga_ready", False)
         channel = classify_channel(match["session_source"], match["session_medium"], match["session_campaign"])
@@ -586,7 +641,36 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 "values": [[value]],
             })
 
-    return updates, skipped, written, format_src, appended_rows
+    # 명단 대조: DB에서 사라진 기존 신청자는 삭제하지 않고 사유를 '이관'으로 표시
+    transferred = []
+    if db_keys is not None and "reason" in col_index:
+        for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
+            name = cell(row, col_index["name"])
+            date = parse_date(cell(row, col_index["date"]))
+            if not name or not date:
+                continue
+            if only_names and name not in only_names:
+                continue
+            if (check_start and date < check_start) or (check_end and date > check_end):
+                continue
+            if is_test_applicant(name) or (name, date) in db_keys:
+                continue
+            reason_text = cell(row, col_index["reason"])
+            if reason_text == TRANSFER_REASON:
+                # 이미 이관으로 표시된 행은 확인 항목에 올리지 않음
+                continue
+            if reason_text:
+                # 탈락·포기 등 사유가 이미 적힌 행은 덮어쓰지 않음
+                skipped.append(f"{name} {date}: DB에 없음 (사유 '{cell(row, col_index['reason'])}' 유지)")
+                continue
+            updates.append({
+                "range": rowcol_to_a1(row_no, col_index["reason"] + 1),
+                "values": [[TRANSFER_REASON]],
+            })
+            transferred.append({"name": name, "apply_date": date, "row": row_no})
+            logger.info("이관 표시: %d행 %s %s", row_no, date, name)
+
+    return updates, skipped, written, format_src, appended_rows, transferred
 
 
 def copy_row_formats(worksheet, src_row, dst_rows):
@@ -776,17 +860,19 @@ def parse_cli_date(text):
 def main():
     """CLI 진입점: 기본 정보는 바로, 유입 정보는 GA가 준비된 날짜만 과정별 시트에 기록합니다."""
     parser = argparse.ArgumentParser(description="BigQuery 매칭 결과를 과정별 시트에 기록")
-    parser.add_argument("--start", type=parse_cli_date, help="시작일 YYYY-MM-DD (기본: 최근 7일 KST)")
+    parser.add_argument("--start", type=parse_cli_date, help="시작일 YYYY-MM-DD (기본: 반영 시작일 2026-10-28)")
     parser.add_argument("--end", type=parse_cli_date, help="종료일 YYYY-MM-DD (기본: 어제 KST)")
     parser.add_argument("--apply", action="store_true", help="실제로 시트에 기록 (없으면 드라이런)")
+    parser.add_argument("--only-names", default="", help="이 이름들만 반영 (쉼표로 구분, 수동 보정용)")
     args = parser.parse_args()
 
     yesterday = dt.datetime.now(KST).date() - dt.timedelta(days=1)
     if args.start:
         start, end = args.start, args.end or args.start
     else:
-        # 주말 등 PC가 꺼져 DB 추출이 밀린 경우와 GA가 늦게 올라오는 경우를 위해 최근 7일을 함께 확인
-        start, end = yesterday - dt.timedelta(days=6), args.end or yesterday
+        # 기본은 반영 시작일부터 어제까지 전체를 다시 확인합니다.
+        # 이전에 기록된 신청자도 DB와 대조해 추가(다른 과정 이관 입과 등)·이관 표시를 맞추기 위함입니다.
+        start, end = APPLY_START_DATE, args.end or yesterday
     mode = "APPLY" if args.apply else "DRY-RUN"
     logger.info("실행 모드: %s, 기간: %s ~ %s", mode, start, end)
 
@@ -799,19 +885,59 @@ def main():
     auto_log = fetch_auto_log(bq_client)
     grouped = group_by_cohort(bq_client, start, end, ready)
 
-    for (course_id, semester), rows in sorted(grouped.items()):
+    # 명단 기준은 PG다. BigQuery 적재는 신규 신청만 추가하므로 과정 변경이 반영되지 않는다.
+    # BigQuery 매칭 결과는 GA 유입 정보를 붙이는 데만 쓴다 (이름·신청일 기준).
+    ga_by_key = {}
+    for rows in grouped.values():
+        for row in rows:
+            ga_by_key[(row["name"].strip(), parse_date(row["db_submitted_at"]))] = row
+
+    pg_by_cohort = defaultdict(list)
+    for person in fetch_pg_applicants():
+        if not (start <= person["date"] <= end) or person["date"] < APPLY_START_DATE:
+            continue
+        if is_test_applicant(person["name"]):
+            continue
+        course_id = COURSE_MAPPING.get(person["course"])
+        if course_id is None:
+            continue
+        pg_by_cohort[(course_id, int(person["semester"]))].append(person)
+
+    only_names = {name.strip() for name in args.only_names.split(",") if name.strip()} if args.only_names else None
+    human_check = []
+
+    for (course_id, semester), people in sorted(pg_by_cohort.items()):
         cohort = COURSES.get(course_id, {}).get("cohorts", {}).get(semester)
         if cohort is None:
-            logger.warning("config에 없는 기수: %s %s기 (%d건)", course_id, semester, len(rows))
+            logger.warning("config에 없는 기수: %s %s기 (%d건)", course_id, semester, len(people))
             continue
 
         label = f"{course_id} {semester}기"
+        rows = []
+        for person in people:
+            name = person["name"].strip()
+            key = (name, person["date"])
+            if key in ga_by_key:
+                rows.append(dict(ga_by_key[key]))
+            else:
+                # BigQuery에 없는 신청자는 GA 정보 없이 기본 정보(일자·이름·연령대)만 기록
+                rows.append({
+                    "name": name, "db_submitted_at": person["date"].isoformat(),
+                    "applicant_birth": person["applicant_birth"], "_ga_ready": False,
+                    "session_source": "", "session_medium": "", "session_campaign": "",
+                    "session_content": "", "session_term": "",
+                })
+            if not person["applicant_birth"]:
+                human_check.append(f"[생년월일 없음] {label} {person['date']} {name}: 연령대 공란 (PG 생년월일 입력 필요)")
+        db_keys = {(row["name"].strip(), parse_date(row["db_submitted_at"])) for row in rows}
+
         try:
             worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
             is_employed = COURSES[course_id]["type"] == "employed"
             skip_fields = EMPLOYED_SKIP_FIELDS if is_employed else frozenset()
-            updates, skipped, written, format_src, appended_rows = build_updates(
-                worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log, course_id
+            updates, skipped, written, format_src, appended_rows, transferred = build_updates(
+                worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log, course_id,
+                db_keys=db_keys, check_start=max(start, APPLY_START_DATE), check_end=end, only_names=only_names,
             )
         except Exception:
             # 한 시트의 문제가 다른 과정/기수 처리를 막지 않도록 건너뜀
@@ -820,8 +946,13 @@ def main():
 
         for reason in skipped:
             logger.warning("[%s] 건너뜀 - %s", label, reason)
+            if "DB에 없음" in reason:
+                human_check.append(f"[사유 충돌] {label} {reason} (이관 표시 안 함 - 확인 필요)")
+        for item in transferred:
+            human_check.append(f"[이관 표시] {label} {item['row']}행 {item['apply_date']} {item['name']}: 사유 '{TRANSFER_REASON}' 기록 (확인 권장)")
 
-        logger.info("[%s] 매칭 %d건, 기록 대상 셀 %d개", label, len(rows), len(updates))
+        logger.info("[%s] PG 명단 %d건, 기록 대상 셀 %d개, 이관 표시 %d건",
+                    label, len(rows), len(updates), len(transferred))
         for update in updates:
             logger.info("  %s → %s", update["range"], update["values"][0][0])
 
@@ -830,6 +961,11 @@ def main():
             copy_row_formats(worksheet, format_src, appended_rows)
             logger.info("[%s] 시트 기록 완료", label)
             append_auto_log(bq_client, course_id, semester, written)
+
+    HUMAN_CHECK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    text = "\n".join(human_check) if human_check else "확인 필요 항목 없음"
+    HUMAN_CHECK_PATH.write_text(text + "\n", encoding="utf-8")
+    logger.info("사람 확인 항목 %d건 → %s", len(human_check), HUMAN_CHECK_PATH)
 
 
 if __name__ == "__main__":
