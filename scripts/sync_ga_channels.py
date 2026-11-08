@@ -43,6 +43,12 @@ from sync_applicants_from_db import EXTRACT_SQL, ENV_PATH, load_env  # noqa: E40
 # PG 기준 명단 조회: DB 추출 조건과 같되, 생년월일이 없는 신청자도 포함 (연령대만 비움)
 PG_APPLICANT_SQL = EXTRACT_SQL.replace("  AND p.birth IS NOT NULL\n", "")
 assert PG_APPLICANT_SQL != EXTRACT_SQL, "PG 추출 SQL에서 생년월일 조건을 찾지 못했습니다."
+# 휴대폰 번호로 테스트 여부를 판단하려고 전화번호 열을 추가 (이름이 달라도 같은 번호면 테스트)
+PG_APPLICANT_SQL = PG_APPLICANT_SQL.replace("    p.name,\n", "    p.name,\n    p.phone_number,\n", 1)
+assert "p.phone_number" in PG_APPLICANT_SQL, "PG 추출 SQL에 전화번호 열을 추가하지 못했습니다."
+
+# 테스트 계정이 쓰는 휴대폰 번호 (숫자만). 이 번호로 들어온 신청은 이름과 무관하게 기록에서 제외
+TEST_PHONE_NUMBERS = {"01077593244"}
 
 # 매일 사람이 확인해야 할 항목을 적는 파일 (메일 알림에 포함)
 HUMAN_CHECK_PATH = PROJECT_ROOT / "logs" / "manual_check.txt"
@@ -90,6 +96,12 @@ REFRESH_APPLICANTS = {
 # 다시 확인 대상의 덮어쓰기 가능 필드 (연령대는 생년월일 기준이라 제외)
 REFRESHABLE_FIELDS = {"channel", "material", "campaign"}
 
+# 사람이 확인을 끝낸 '생년월일 없음' 신청자. PG에 생년월일이 없는 것이 확인된 경우 사람 확인 항목에서 제외합니다.
+# 키: (과정 id, 기수, 이름). 연령대는 공란으로 유지됩니다.
+BIRTH_CONFIRMED_MISSING = {
+    ("private_ai", 2, "임현우"),
+}
+
 # 기본 정보는 GA와 무관하게 기록, 유입 정보는 GA 데이터가 준비된 날짜만 기록
 BASE_FIELDS = {"date", "name", "age"}
 GA_FIELDS = {"channel", "material", "campaign", "note"}
@@ -119,7 +131,10 @@ CHANNEL_BY_SOURCE_MEDIUM = {
     ("(direct)", "(none)"): "직접 지원",
     ("kauth.kakao.com", "referral"): "직접 지원",
     ("apply.aiffel.io", "referral"): "직접 지원",
+    ("member.modulabs.co.kr", "referral"): "직접 지원",
     ("community", "board_all"): "커뮤니티/버티컬",
+    # 재직자 과정은 build_updates에서 '모두연 홈페이지'로 바꿈
+    ("modulabs", "board_all"): "모두연 배너",
     ("chatgpt.com", None): "LLM(GPT, 퍼플렉시티 등)",
     ("kakao", "list_plus_friends"): "카카오 플러스친구",
     ("kakao", "mail_plus_friends"): "카카오 플러스친구",
@@ -134,6 +149,9 @@ CHANNEL_BY_SOURCE_MEDIUM = {
     ("goyong24", "referral"): "HRD Net",
     ("work24.go.kr", "referral"): "HRD Net",
 }
+
+# 구글 SA로 분류하는 캠페인명 패턴 (_sa 토큰, B2B 교육, 리서처 abroad·exact 키워드 캠페인)
+GOOGLE_SA_RE = re.compile(r"(^|_)sa($|_)|b2b_education|abroad|exact", re.IGNORECASE)
 
 # 시트의 '일자' 셀 형식 후보 (실제 형식과 다르면 여기에 추가)
 DATE_FORMATS = [
@@ -221,8 +239,8 @@ def classify_channel(source, medium, campaign):
         # 구글 광고는 캠페인명으로 DA와 검색광고(SA)를 구분
         if re.search(r"pmax|dgen", campaign or "", re.IGNORECASE):
             return "구글 DA"
-        # B2B 교육 캠페인(b2b_education_*)은 검색 광고(SA)로 분류
-        if re.search(r"(^|_)sa($|_)|b2b_education", campaign or "", re.IGNORECASE):
+        # B2B 교육 캠페인(b2b_education_*)과 abroad·exact 키워드 캠페인(리서처 검색 광고)은 검색 광고(SA)로 분류
+        if GOOGLE_SA_RE.search(campaign or ""):
             return "구글 SA"
         return None
     return CHANNEL_BY_SOURCE_MEDIUM.get((source, medium)) or CHANNEL_BY_SOURCE_MEDIUM.get((source, None))
@@ -312,7 +330,11 @@ def material_for(channel, match):
         return shorten_name(match["session_content"])
     if channel == "카카오 DA":
         return shorten_name(match["session_term"])
-    if channel in ("네이버 브검", "구글 SA"):
+    if channel == "구글 SA":
+        # 구글 SA 키워드는 검색어(utm_term)로 기록하고, 검색어를 확인할 수 없으면 '확인불가'로 표시
+        term = (match["session_term"] or "").strip()
+        return "확인불가" if not term or term in GA_PLACEHOLDERS else term
+    if channel == "네이버 브검":
         return match["session_term"]
     if channel == "네이버 SA":
         # 네이버 SA의 키워드 뒤에 붙는 광고 ID(_nad-…)는 제외
@@ -404,6 +426,8 @@ def fetch_pg_applicants():
                 if row["apply_id"] in rows:
                     continue
                 row["date"] = row["submitted_at"].date()
+                # 전화번호의 하이픈을 제거하고 테스트 번호 목록과 비교
+                row["is_test_phone"] = re.sub(r"\D", "", row.get("phone_number") or "") in TEST_PHONE_NUMBERS
                 rows[row["apply_id"]] = row
     logger.info("PG 지원자 명단 %d건", len(rows))
     return list(rows.values())
@@ -577,6 +601,10 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         date = parse_date(match["db_submitted_at"])
         ga_on = match.get("_ga_ready", False)
         channel = classify_channel(match["session_source"], match["session_medium"], match["session_campaign"])
+        if (match["session_source"], match["session_medium"]) == ("modulabs", "board_all") and course_id \
+                and COURSES[course_id]["type"] == "employed":
+            # 모두연 홈페이지 유입은 재직자 과정에서만 '모두연 홈페이지', 나머지 과정은 '모두연 배너'
+            channel = "모두연 홈페이지"
         if channel == "직접 지원" and is_meta_ad(match):
             # GA가 출처를 놓쳤지만 메타 광고 흔적이 있으면 메타로 분류
             channel = "메타"
@@ -860,6 +888,21 @@ def parse_cli_date(text):
     return dt.datetime.strptime(text, "%Y-%m-%d").date()
 
 
+def needs_birth_check(course_id, semester, name, birth):
+    """생년월일 없음 항목을 사람 확인 대상으로 볼지 판단합니다.
+
+    Args:
+        course_id: 과정 id
+        semester: 기수 (정수)
+        name: 신청자 이름 (공백 제거된 값)
+        birth: PG 생년월일 (없으면 빈 값)
+
+    Returns:
+        생년월일이 없고 아직 확인 완료되지 않은 신청자면 True
+    """
+    return not birth and (course_id, semester, name) not in BIRTH_CONFIRMED_MISSING
+
+
 def main():
     """CLI 진입점: 기본 정보는 바로, 유입 정보는 GA가 준비된 날짜만 과정별 시트에 기록합니다."""
     parser = argparse.ArgumentParser(description="BigQuery 매칭 결과를 과정별 시트에 기록")
@@ -889,11 +932,12 @@ def main():
     grouped = group_by_cohort(bq_client, start, end, ready)
 
     # 명단 기준은 PG다. BigQuery 적재는 신규 신청만 추가하므로 과정 변경이 반영되지 않는다.
-    # BigQuery 매칭 결과는 GA 유입 정보를 붙이는 데만 쓴다 (이름·신청일 기준).
+    # BigQuery 매칭 결과는 GA 유입 정보를 붙이는 데만 쓴다 (이름·신청일·과정·기수 기준).
+    # 같은 사람이 같은 날 여러 과정에 지원하면 과정별로 따로 매칭해야 한쪽 GA 정보가 덮어써지지 않는다.
     ga_by_key = {}
-    for rows in grouped.values():
+    for (course_id, semester), rows in grouped.items():
         for row in rows:
-            ga_by_key[(row["name"].strip(), parse_date(row["db_submitted_at"]))] = row
+            ga_by_key[(row["name"].strip(), parse_date(row["db_submitted_at"]), course_id, semester)] = row
 
     pg_by_cohort = defaultdict(list)
     for person in fetch_pg_applicants():
@@ -916,10 +960,13 @@ def main():
             continue
 
         label = f"{course_id} {semester}기"
+        # 테스트 번호 신청은 기록하지 않되, 시트 행을 '이관'으로 잘못 표시하지 않도록 DB 키에는 남김
+        test_keys = {(p["name"].strip(), p["date"]) for p in people if p["is_test_phone"]}
+        people = [p for p in people if not p["is_test_phone"]]
         rows = []
         for person in people:
             name = person["name"].strip()
-            key = (name, person["date"])
+            key = (name, person["date"], course_id, semester)
             if key in ga_by_key:
                 rows.append(dict(ga_by_key[key]))
             else:
@@ -930,9 +977,9 @@ def main():
                     "session_source": "", "session_medium": "", "session_campaign": "",
                     "session_content": "", "session_term": "",
                 })
-            if not person["applicant_birth"]:
+            if needs_birth_check(course_id, semester, name, person["applicant_birth"]):
                 human_check.append(f"[생년월일 없음] {label} {person['date']} {name}: 연령대 공란 (PG 생년월일 입력 필요)")
-        db_keys = {(row["name"].strip(), parse_date(row["db_submitted_at"])) for row in rows}
+        db_keys = {(row["name"].strip(), parse_date(row["db_submitted_at"])) for row in rows} | test_keys
 
         try:
             worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])

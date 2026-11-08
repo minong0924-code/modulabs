@@ -93,5 +93,25 @@ class ChatGptChannelTest(unittest.TestCase):
         self.assertEqual(s.campaign_for("ChatGPT DA", match), "aiintelligence3rd_agentdata_image_261102")
 
 
+class BirthCheckTest(unittest.TestCase):
+    """생년월일 없음 사람 확인 항목 판정 테스트"""
+
+    def test_confirmed_applicant_is_excluded(self):
+        """확인 완료된 임현우(private_ai 2기)는 생년월일이 없어도 사람 확인 대상이 아니다"""
+        self.assertFalse(s.needs_birth_check("private_ai", 2, "임현우", None))
+
+    def test_unconfirmed_applicant_without_birth_is_flagged(self):
+        """확인 목록에 없는 신청자는 생년월일이 없으면 사람 확인 대상이다"""
+        self.assertTrue(s.needs_birth_check("private_ai", 2, "홍길동", None))
+
+    def test_applicant_with_birth_is_not_flagged(self):
+        """생년월일이 있으면 확인 목록과 무관하게 대상이 아니다"""
+        self.assertFalse(s.needs_birth_check("private_ai", 2, "홍길동", dt.date(1990, 1, 1)))
+
+    def test_same_name_other_cohort_is_still_flagged(self):
+        """이름이 같아도 다른 기수는 확인 완료로 보지 않는다"""
+        self.assertTrue(s.needs_birth_check("private_ai", 1, "임현우", None))
+
+
 if __name__ == "__main__":
     unittest.main()
