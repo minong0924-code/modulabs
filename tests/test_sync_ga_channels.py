@@ -54,26 +54,22 @@ class ReconcileTest(unittest.TestCase):
         """사유가 '이관'이고 이관 과정이 빈칸이면 날짜와 무관하게 확인 목록에 올린다"""
         sheet = self._transfer_sheet([("빈칸이관", "2026-08-30", "이관", ""),
                                       ("기록됨", "2026-08-31", "이관", "에이전트 4기")])
-        marked = []
-        updates, _, _, _, _, transferred = s.build_updates(
-            sheet, 1, [], db_keys=set(),
-            check_start=dt.date(2026, 10, 28), check_end=dt.date(2026, 11, 3),
-            transfer_marked=marked,
-        )
+        found = s.find_transfer_candidates(sheet, 1)
 
-        self.assertEqual(updates, [])
-        self.assertEqual(transferred, [])
-        self.assertEqual([m["name"] for m in marked], ["빈칸이관"])
+        self.assertEqual([m["name"] for m in found], ["빈칸이관"])
+        self.assertEqual(found[0]["row"], 2)
 
     def test_transfer_with_course_is_excluded_from_email(self):
         """이관 과정이 기록된 행은 확인 목록에서 제외한다"""
         sheet = self._transfer_sheet([("기록됨", "2026-10-29", "이관", "리서처 20기")])
-        marked = []
-        s.build_updates(sheet, 1, [], db_keys=set(),
-                        check_start=dt.date(2026, 10, 28), check_end=dt.date(2026, 11, 3),
-                        transfer_marked=marked)
 
-        self.assertEqual(marked, [])
+        self.assertEqual(s.find_transfer_candidates(sheet, 1), [])
+
+    def test_transfer_candidates_ignore_reason_other_than_transfer(self):
+        """사유가 이관이 아니면 이관 과정이 비어 있어도 확인 목록에 올리지 않는다"""
+        sheet = self._transfer_sheet([("장기부재", "2026-10-29", "장기부재", "")])
+
+        self.assertEqual(s.find_transfer_candidates(sheet, 1), [])
 
     def test_existing_reason_is_kept(self):
         """사유가 이미 적힌 행(탈락 등)은 '이관'으로 덮어쓰지 않는다"""

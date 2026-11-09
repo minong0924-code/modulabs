@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sys
+import time
 import tomllib
 from collections import defaultdict
 from pathlib import Path
@@ -540,8 +541,66 @@ def can_write_ga(current, value, field, refresh, last_auto):
     return last_auto is not None and current == last_auto
 
 
+def read_sheet_values_with_retry(gs_client, cohort, attempts=4):
+    """시트 전체 값을 읽습니다. 분당 읽기 한도(429) 초과 시 대기 후 다시 시도합니다.
+
+    Args:
+        gs_client: gspread 클라이언트
+        cohort: COURSES의 기수 설정 dict (sheet_id, sheet_name 포함)
+        attempts: 최대 시도 횟수
+
+    Returns:
+        시트 값 2차원 리스트. 모든 시도가 실패하면 마지막 예외를 다시 던집니다.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"]).get_all_values()
+        except gspread.exceptions.APIError as error:
+            if "429" not in str(error) or attempt == attempts:
+                raise
+            wait = 20 * attempt
+            logger.warning("시트 읽기 한도 초과, %d초 후 재시도 (%d/%d)", wait, attempt, attempts)
+            time.sleep(wait)
+
+
+def find_transfer_candidates(sheet_values, header_row):
+    """시트에서 사유가 '이관'이고 '타 과정으로 이관' 칸이 빈 행을 찾습니다.
+
+    날짜 범위와 무관하게 시트 전체를 봅니다. 명단 대조(PG)와 독립적으로 동작합니다.
+
+    Args:
+        sheet_values: worksheet.get_all_values() 결과 (2차원 리스트)
+        header_row: 헤더 행 번호 (1-based, 기본값)
+
+    Returns:
+        [{"name", "apply_date", "row"}] 목록 (row는 1-based 시트 행 번호)
+    """
+    header_row = find_header_row(sheet_values, header_row)
+    headers = [h.strip() for h in sheet_values[header_row - 1]]
+    if "사유" not in headers or "신청자 이름" not in headers or "일자" not in headers:
+        return []
+    reason_col = headers.index("사유")
+    name_col = headers.index("신청자 이름")
+    date_col = headers.index("일자")
+    course_col = next((headers.index(h) for h in TRANSFER_COURSE_HEADERS if h in headers), None)
+
+    found = []
+    for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
+        name = cell(row, name_col)
+        date = parse_date(cell(row, date_col))
+        if not name or not date:
+            continue
+        if cell(row, reason_col) != TRANSFER_REASON:
+            continue
+        if course_col is not None and cell(row, course_col):
+            # 이관 과정이 이미 기록된 행은 제외
+            continue
+        found.append({"name": name, "apply_date": date, "row": row_no})
+    return found
+
+
 def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None, course_id=None,
-                  db_keys=None, check_start=None, check_end=None, only_names=None, transfer_marked=None):
+                  db_keys=None, check_start=None, check_end=None, only_names=None):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
 
     db_keys가 주어지면 명단 대조도 합니다. 기간 안의 시트 행 중 DB에 없는 (이름, 신청일)은
@@ -558,8 +617,6 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         check_start: 명단 대조 시작일 (datetime.date, 포함)
         check_end: 명단 대조 종료일 (datetime.date, 포함)
         only_names: 이 이름들만 처리 (None이면 전체). 특정 신청자만 수동으로 반영할 때 사용
-        transfer_marked: 사유가 '이관'이고 '타 과정으로 이관' 칸이 빈 행을 담을 목록 (None이면 수집하지 않음).
-            날짜 범위와 무관하게 매번 수집하며, 메일 확인 항목용
 
     Returns:
         (updates, skipped, written, format_src, appended_rows, transferred): gspread batch_update용 dict 목록,
@@ -676,21 +733,6 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 "range": rowcol_to_a1(row_no, col_index[field] + 1),
                 "values": [[value]],
             })
-
-    # 이관 확인 목록: 날짜 범위와 무관하게 사유가 '이관'이고 '타 과정/타 기수 이관' 칸이 빈 행만 모음
-    if transfer_marked is not None and "reason" in col_index:
-        course_col = next((headers.index(h) for h in TRANSFER_COURSE_HEADERS if h in headers), None)
-        for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
-            name = cell(row, col_index["name"])
-            date = parse_date(cell(row, col_index["date"]))
-            if not name or not date or (only_names and name not in only_names):
-                continue
-            if cell(row, col_index["reason"]) != TRANSFER_REASON:
-                continue
-            if course_col is not None and cell(row, course_col):
-                # 이관 과정이 이미 기록된 행은 확인 목록에서 제외
-                continue
-            transfer_marked.append({"name": name, "apply_date": date, "row": row_no})
 
     # 명단 대조: DB에서 사라진 기존 신청자는 삭제하지 않고 사유를 '이관'으로 표시
     transferred = []
@@ -1005,11 +1047,9 @@ def main():
             worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
             is_employed = COURSES[course_id]["type"] == "employed"
             skip_fields = EMPLOYED_SKIP_FIELDS if is_employed else frozenset()
-            transfer_marked = []
             updates, skipped, written, format_src, appended_rows, transferred = build_updates(
                 worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log, course_id,
                 db_keys=db_keys, check_start=max(start, APPLY_START_DATE), check_end=end, only_names=only_names,
-                transfer_marked=transfer_marked,
             )
         except Exception:
             # 한 시트의 문제가 다른 과정/기수 처리를 막지 않도록 건너뜀
@@ -1022,8 +1062,6 @@ def main():
                 human_check.append(f"[사유 충돌] {label} {reason} (이관 표시 안 함 - 확인 필요)")
         for item in transferred:
             human_check.append(f"[이관 표시] {label} {item['row']}행 {item['apply_date']} {item['name']}: 사유 '{TRANSFER_REASON}' 기록 (확인 권장)")
-        for item in transfer_marked:
-            human_check.append(f"[이관 인원] {label} {item['row']}행 {item['apply_date']} {item['name']}: 사유 '{TRANSFER_REASON}', 이관 과정 미기재 - 시트 '{TRANSFER_COURSE_HEADERS[0]}' 열 확인·기록 필요")
 
         logger.info("[%s] PG 명단 %d건, 기록 대상 셀 %d개, 이관 표시 %d건",
                     label, len(rows), len(updates), len(transferred))
@@ -1035,6 +1073,23 @@ def main():
             copy_row_formats(worksheet, format_src, appended_rows)
             logger.info("[%s] 시트 기록 완료", label)
             append_auto_log(bq_client, course_id, semester, written)
+
+    # 이관 인원 확인: 명단 기간과 무관하게 모든 과정·기수 시트를 훑어 매일 메일에 포함
+    for course_id, course in COURSES.items():
+        for semester, cohort in sorted(course.get("cohorts", {}).items()):
+            label = f"{course_id} {semester}기"
+            try:
+                values = read_sheet_values_with_retry(gs_client, cohort)
+            except Exception:
+                logger.exception("[%s] 이관 인원 확인 중 시트 읽기 실패", label)
+                # 확인하지 못한 과정은 메일에 그대로 드러나야 누락을 알 수 있다
+                human_check.append(f"[이관 확인 실패] {label}: 시트 읽기 실패로 이관 인원을 확인하지 못했습니다")
+                continue
+            for item in find_transfer_candidates(values, cohort["header_row"]):
+                human_check.append(
+                    f"[이관 인원] {label} {item['row']}행 {item['apply_date']} {item['name']}: "
+                    f"사유 '{TRANSFER_REASON}', 이관 과정 미기재 - 시트 '{TRANSFER_COURSE_HEADERS[0]}' 열 확인·기록 필요"
+                )
 
     HUMAN_CHECK_PATH.parent.mkdir(parents=True, exist_ok=True)
     text = "\n".join(human_check) if human_check else "확인 필요 항목 없음"
