@@ -85,6 +85,9 @@ OPTIONAL_FIELDS = {"campaign", "age", "note", "reason"}
 # DB 명단에서 사라진 신청자(다른 과정으로 이관 등)의 사유 칸에 적는 값. 행은 삭제하지 않습니다.
 TRANSFER_REASON = "이관"
 
+# 2.2 신청현황 시트의 이관 과정 열 제목 후보 (이관 인원 확인 목록 판단에 사용, 시트마다 표기가 다를 수 있어 여러 개 허용)
+TRANSFER_COURSE_HEADERS = ("타 과정으로 이관", "타 과정/타 기수 이관")
+
 # 이 날짜 이전 신청자는 기록하지 않음 (기존 시트 데이터 보호, 신규 신청분부터 반영)
 APPLY_START_DATE = dt.date(2026, 10, 28)
 
@@ -538,7 +541,7 @@ def can_write_ga(current, value, field, refresh, last_auto):
 
 
 def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None, course_id=None,
-                  db_keys=None, check_start=None, check_end=None, only_names=None):
+                  db_keys=None, check_start=None, check_end=None, only_names=None, transfer_marked=None):
     """매칭 결과로 시트에 쓸 셀 업데이트 목록을 만듭니다.
 
     db_keys가 주어지면 명단 대조도 합니다. 기간 안의 시트 행 중 DB에 없는 (이름, 신청일)은
@@ -555,6 +558,8 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
         check_start: 명단 대조 시작일 (datetime.date, 포함)
         check_end: 명단 대조 종료일 (datetime.date, 포함)
         only_names: 이 이름들만 처리 (None이면 전체). 특정 신청자만 수동으로 반영할 때 사용
+        transfer_marked: 사유가 '이관'이고 '타 과정으로 이관' 칸이 빈 행을 담을 목록 (None이면 수집하지 않음).
+            날짜 범위와 무관하게 매번 수집하며, 메일 확인 항목용
 
     Returns:
         (updates, skipped, written, format_src, appended_rows, transferred): gspread batch_update용 dict 목록,
@@ -672,6 +677,21 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 "values": [[value]],
             })
 
+    # 이관 확인 목록: 날짜 범위와 무관하게 사유가 '이관'이고 '타 과정/타 기수 이관' 칸이 빈 행만 모음
+    if transfer_marked is not None and "reason" in col_index:
+        course_col = next((headers.index(h) for h in TRANSFER_COURSE_HEADERS if h in headers), None)
+        for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
+            name = cell(row, col_index["name"])
+            date = parse_date(cell(row, col_index["date"]))
+            if not name or not date or (only_names and name not in only_names):
+                continue
+            if cell(row, col_index["reason"]) != TRANSFER_REASON:
+                continue
+            if course_col is not None and cell(row, course_col):
+                # 이관 과정이 이미 기록된 행은 확인 목록에서 제외
+                continue
+            transfer_marked.append({"name": name, "apply_date": date, "row": row_no})
+
     # 명단 대조: DB에서 사라진 기존 신청자는 삭제하지 않고 사유를 '이관'으로 표시
     transferred = []
     if db_keys is not None and "reason" in col_index:
@@ -688,7 +708,7 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 continue
             reason_text = cell(row, col_index["reason"])
             if reason_text == TRANSFER_REASON:
-                # 이미 이관으로 표시된 행은 확인 항목에 올리지 않음
+                # 이미 이관으로 표시된 행은 시트를 바꾸지 않음 (메일 확인 목록은 아래에서 따로 모음)
                 continue
             if reason_text:
                 # 탈락·포기 등 사유가 이미 적힌 행은 덮어쓰지 않음
@@ -985,9 +1005,11 @@ def main():
             worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
             is_employed = COURSES[course_id]["type"] == "employed"
             skip_fields = EMPLOYED_SKIP_FIELDS if is_employed else frozenset()
+            transfer_marked = []
             updates, skipped, written, format_src, appended_rows, transferred = build_updates(
                 worksheet.get_all_values(), cohort["header_row"], rows, skip_fields, auto_log, course_id,
                 db_keys=db_keys, check_start=max(start, APPLY_START_DATE), check_end=end, only_names=only_names,
+                transfer_marked=transfer_marked,
             )
         except Exception:
             # 한 시트의 문제가 다른 과정/기수 처리를 막지 않도록 건너뜀
@@ -1000,6 +1022,8 @@ def main():
                 human_check.append(f"[사유 충돌] {label} {reason} (이관 표시 안 함 - 확인 필요)")
         for item in transferred:
             human_check.append(f"[이관 표시] {label} {item['row']}행 {item['apply_date']} {item['name']}: 사유 '{TRANSFER_REASON}' 기록 (확인 권장)")
+        for item in transfer_marked:
+            human_check.append(f"[이관 인원] {label} {item['row']}행 {item['apply_date']} {item['name']}: 사유 '{TRANSFER_REASON}', 이관 과정 미기재 - 시트 '{TRANSFER_COURSE_HEADERS[0]}' 열 확인·기록 필요")
 
         logger.info("[%s] PG 명단 %d건, 기록 대상 셀 %d개, 이관 표시 %d건",
                     label, len(rows), len(updates), len(transferred))
