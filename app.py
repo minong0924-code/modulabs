@@ -54,6 +54,9 @@ from src.inflow_loader import (
 )
 from src.metrics import (
     REJECTION_KIND_DOC,
+    block_wow_lines,
+    campaign_focus_lines,
+    period_days,
     weekly_comparison_table,
     UNCLASSIFIED,
     ad_coverage,
@@ -642,10 +645,91 @@ def recruit_week_table(apps: pd.DataFrame, wide: pd.DataFrame, recruit_start, la
     return pd.DataFrame(rows)
 
 
+def render_week_summary(wide: pd.DataFrame, apps: pd.DataFrame, cur_start, cur_end, prev_start, prev_end):
+    """선택 주 요약 카드를 그립니다: 총평, 매체별 광고비·전환, 직전 주 대비 변화, 제안 액션, 소재·캠페인 인사이트.
+
+    직전 주 광고 데이터가 7일보다 적으면 일평균 기준이라는 안내를 먼저 띄웁니다.
+
+    Args:
+        wide: 과정·기수의 매체·일자별 광고 DataFrame
+        apps: 분류된 지원자 DataFrame (소재·캠페인 인사이트에 씁니다)
+        cur_start, cur_end: 선택 주 기간
+        prev_start, prev_end: 직전 주 기간
+    """
+    prev_days = period_days(wide, prev_start, prev_end)
+    if 0 < prev_days < 7:
+        st.warning(f"직전 주({prev_start:%m.%d}~{prev_end:%m.%d})는 광고 데이터가 {prev_days}일치뿐입니다. "
+                   "증감률은 일평균 기준으로 비교합니다.")
+    narrative = weekly_narrative(wide, cur_start, cur_end, prev_start, prev_end)
+    wow_lines = block_wow_lines(wide, cur_start, cur_end, prev_start, prev_end)
+    focus_lines = campaign_focus_lines(apps, cur_start, cur_end, prev_start, prev_end)
+    with st.container(border=True):
+        st.markdown(f"**총평** {narrative['headline']}")
+        if narrative["spend_lines"]:
+            st.markdown("**매체별 광고비·유입·전환**")
+            for line in narrative["spend_lines"]:
+                st.markdown(f"- {line}")
+        if wow_lines:
+            st.markdown("**직전 주 대비 변화 (일평균 기준)**")
+            for line in wow_lines:
+                st.markdown(f"- {line}")
+        for line in narrative["difference_lines"]:
+            st.markdown(f"- {line}")
+        st.markdown("**선택 주 제안 액션**")
+        for action in narrative["actions"]:
+            st.markdown(f"- {action}")
+        st.markdown("**소재·캠페인 인사이트 (지원자 기준, 광고비 미포함)**")
+        if focus_lines:
+            for line in focus_lines:
+                st.markdown(f"- {line}")
+        else:
+            st.markdown("- 지원 2명 이상이고 늘었거나 0건으로 떨어진 소재·캠페인이 없습니다.")
+
+
+def render_course_digest(course_id: str):
+    """선택한 과정의 모집 중 기수를 마지막으로 끝난 주 기준으로 비교해 요약과 제안 액션을 보여 줍니다.
+
+    다른 과정의 내용은 그리지 않습니다. 모집 중인 기수가 없는 과정이면 아무것도 그리지 않습니다.
+    기준 주는 각 기수의 광고 데이터 마지막 날짜로 정합니다. 이번 주처럼 아직 끝나지 않은 주는 건너뜁니다.
+
+    Args:
+        course_id: 사이드바에서 선택한 과정 ID
+    """
+    recruiting = [(cid, sem) for cid, sem in RECRUITING_COHORTS if cid == course_id and sem in COURSES[cid]["cohorts"]]
+    if not recruiting:
+        return
+    st.markdown(f"#### 📋 {COURSES[course_id]['name']} 요약과 제안 액션 (마지막으로 끝난 주 기준)")
+    st.caption("이번 주는 데이터가 쌓이는 중이라, 마지막으로 끝난 주를 그 직전 주와 비교합니다. "
+               "데이터가 쌓이면 자동으로 최신 완료 주로 바뀝니다.")
+    items = []
+    with st.spinner("과정 데이터를 불러오는 중입니다..."):
+        for course_id, semester in recruiting:
+            cohort_bundle = try_bundle(course_id, semester)
+            if cohort_bundle is None or cohort_bundle["wide"].empty:
+                continue
+            cohort_wide = cohort_bundle["wide"]
+            latest = to_date(cohort_wide["date"].max())
+            week = last_full_week_start(latest)
+            periods = comparison_periods(week, latest)
+            if not periods["complete"] or period_days(cohort_wide, *periods["current"]) == 0:
+                continue
+            items.append((COURSES[course_id]["name"], semester, cohort_bundle, periods))
+    if not items:
+        st.info("마지막으로 끝난 주의 광고 데이터가 있는 과정·기수가 없습니다.")
+        return
+    for name, semester, cohort_bundle, periods in items:
+        cur_start, cur_end = periods["current"]
+        prev_start, prev_end = periods["previous"]
+        narrative = weekly_narrative(cohort_bundle["wide"], cur_start, cur_end, prev_start, prev_end)
+        with st.expander(f"{name} {semester}기 · {week_label(cur_start)} · {narrative['headline']}"):
+            render_week_summary(cohort_bundle["wide"], cohort_bundle["apps"], cur_start, cur_end, prev_start, prev_end)
+
+
 def render_weekly():
     """주차별 추이를 맨 위에 두고, 주 단위 매체 효율·전주 대비·해당 주 지원자 전형 결과·인사이트를 그립니다."""
     st.subheader("주차별 현황 (월~일 기준)")
     render_data_status(bundle, cov_start, cov_end, now_kst)
+    render_course_digest(selected_course_id)
     if apps.empty or wide.empty:
         st.info("주차별 현황을 표시할 데이터가 없습니다. 지원자 시트와 광고 데이터(2.1, BigQuery) 연결을 확인해주세요.")
         return
@@ -663,8 +747,9 @@ def render_weekly():
     trend["지원"] = [len(counted(apps, w, w + pd.Timedelta(days=6))) for w in trend["week_start"]]
     st.plotly_chart(create_weekly_cost_applicant_chart(trend), use_container_width=True)
 
-    latest_ad_week = week_start_of(to_date(data_latest))
-    default_index = week_starts.index(latest_ad_week) if latest_ad_week in week_starts else len(week_starts) - 1
+    # 기본 선택은 마지막으로 끝난 주(월~일)입니다. 기준일이 속한 주는 데이터가 덜 쌓여 있어 기본으로 쓰지 않습니다.
+    last_full_week = last_full_week_start(data_latest)
+    default_index = week_starts.index(last_full_week) if last_full_week in week_starts else len(week_starts) - 1
     selected_week = st.selectbox(
         "주차 선택", options=week_starts, index=default_index,
         format_func=week_label,
@@ -708,19 +793,8 @@ def render_weekly():
             view[column] = view[column].map(fmt_change)
         show_table(view.round(1), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🧭 이번 주 요약과 제안 액션 (지출 대비 전환 효율)")
-    narrative = weekly_narrative(wide, cur_start, cur_end, prev_start, prev_end)
-    with st.container(border=True):
-        st.markdown(f"**총평** {narrative['headline']}")
-        if narrative["spend_lines"]:
-            st.markdown("**매체별 광고비·유입·전환**")
-            for line in narrative["spend_lines"]:
-                st.markdown(f"- {line}")
-        for line in narrative["difference_lines"]:
-            st.markdown(f"- {line}")
-        st.markdown("**이번 주 제안 액션**")
-        for action in narrative["actions"]:
-            st.markdown(f"- {action}")
+    st.markdown("#### 🧭 선택 주 요약과 제안 액션 (지출 대비 전환 효율)")
+    render_week_summary(wide, apps, cur_start, cur_end, prev_start, prev_end)
 
     week_apps = counted(apps, cur_start, cur_end)
     st.markdown("#### 🧑‍💼 선택 주에 지원한 사람들의 현재 전형 결과 (지원일 기준)")

@@ -131,8 +131,11 @@ def _stage_of(row) -> str:
 APPLICANT_COLUMNS = [
     "지원일", "주차시작", "채널원문", "사전이관", "매체그룹", "유료여부", "현재단계", "결과확정", "탈락구분",
     "사유원문", "사유표시", "탈락구분표시", "누적_서류통과", "누적_인터뷰통과", "누적_최종합격", "누적_등록",
-    "서류결과확정", "인터뷰결과확정",
+    "서류결과확정", "인터뷰결과확정", "유입소재", "캠페인",
 ]
+
+# 소재·캠페인 열에서 집계 대상이 아닌 값 (미입력이나 확인 불가 표기)
+UNKNOWN_TEXTS = {"", "MISSING", "확인불가", "NAN", "NONE"}
 
 
 def prepare_applicants(df: pd.DataFrame) -> pd.DataFrame:
@@ -168,6 +171,9 @@ def prepare_applicants(df: pd.DataFrame) -> pd.DataFrame:
         (out["지원일"].dt.day_of_week - WEEK_START_WEEKDAY) % 7, unit="D"
     )
     out["채널원문"] = out["유입 채널"].astype(str).str.strip() if "유입 채널" in out.columns else ""
+    # 소재·캠페인 원문은 지원자 기준 인사이트에만 씁니다 (광고비와 행 단위로 합치지 않습니다)
+    out["유입소재"] = out["유입 소재 및 키워드"].fillna("").astype(str).str.strip() if "유입 소재 및 키워드" in out.columns else ""
+    out["캠페인"] = out["캠페인 구분"].fillna("").astype(str).str.strip() if "캠페인 구분" in out.columns else ""
     group_text = out["그룹 미팅일 기준"].astype(str).str.strip() if "그룹 미팅일 기준" in out.columns else pd.Series("", index=out.index)
     # 그룹 미팅일 기준이 1주차보다 앞선 '사전 신청'·'전기수 이관' 행은 모집 기간 밖이어도 지원자로 집계합니다
     out["사전이관"] = group_text.str.contains("사전|이관", na=False) | (out["채널원문"] == "사전신청")
@@ -833,6 +839,137 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
     return actions
 
 
+def period_days(wide: pd.DataFrame, start, end) -> int:
+    """기간 안에서 광고 데이터가 있는 날짜 수를 셉니다. 직전 주가 일부만 있는지 확인할 때 씁니다.
+
+    Args:
+        wide: 광고 일별 데이터 (date 열)
+        start, end: 기간 (포함)
+
+    Returns:
+        광고 데이터가 있는 날짜 수 (없으면 0)
+    """
+    if wide is None or wide.empty:
+        return 0
+    part = wide[(wide["date"] >= pd.Timestamp(start)) & (wide["date"] <= pd.Timestamp(end))]
+    return int(part["date"].nunique())
+
+
+def period_block_sums(wide: pd.DataFrame, start, end) -> pd.DataFrame:
+    """기간의 매체별 광고비·CTA 클릭·지원서 제출 합계를 구합니다.
+
+    Args:
+        wide: 광고 일별 데이터
+        start, end: 기간 (포함)
+
+    Returns:
+        매체(block)를 행으로 하는 DataFrame. 데이터가 없으면 빈 DataFrame.
+    """
+    columns = ["비용", "CTA 클릭", "지원서 제출"]
+    if wide is None or wide.empty:
+        return pd.DataFrame(columns=columns)
+    part = wide[(wide["date"] >= pd.Timestamp(start)) & (wide["date"] <= pd.Timestamp(end))]
+    if part.empty:
+        return pd.DataFrame(columns=columns)
+    return part.groupby("block")[columns].sum()
+
+
+def _signed_percent(value) -> str:
+    """증감률을 '+12%' 형태 문자열로 바꿉니다. 문자열(신규 발생, -)은 그대로 둡니다.
+
+    Args:
+        value: pct_change() 결과
+
+    Returns:
+        표시용 문자열
+    """
+    return value if isinstance(value, str) else f"{value:+.0f}%"
+
+
+def block_wow_lines(wide: pd.DataFrame, start, end, prev_start, prev_end) -> list:
+    """선택 주의 매체별 변화를 직전 주와 비교한 문장 목록을 만듭니다.
+
+    기간 일수가 달라도 비교되도록 광고비·제출은 일평균으로 계산합니다. 제출당 비용은 비율이라 그대로 씁니다.
+
+    Args:
+        wide: 광고 일별 데이터
+        start, end: 선택 주 기간
+        prev_start, prev_end: 직전 주 기간
+
+    Returns:
+        "매체: 일평균 광고비 +8% · 일평균 지원서 제출 -11% · 제출당 비용 238,000원 (직전 196,000원, +21%)" 형태 문자열 목록
+    """
+    cur_days = period_days(wide, start, end)
+    prev_days = period_days(wide, prev_start, prev_end)
+    if cur_days == 0 or prev_days == 0:
+        return []
+    cur = period_block_sums(wide, start, end)
+    prev = period_block_sums(wide, prev_start, prev_end)
+    zero = pd.Series({"비용": 0.0, "CTA 클릭": 0.0, "지원서 제출": 0.0})
+    lines = []
+    for block in cur.sort_values("비용", ascending=False).index.union(prev.index, sort=False):
+        c = cur.loc[block] if block in cur.index else zero
+        p = prev.loc[block] if block in prev.index else zero
+        if c["비용"] == 0 and p["비용"] == 0:
+            continue
+        cost_change = pct_change(c["비용"] / cur_days, p["비용"] / prev_days)
+        submit_change = pct_change(c["지원서 제출"] / cur_days, p["지원서 제출"] / prev_days)
+        cur_cps, prev_cps = safe_div(c["비용"], c["지원서 제출"]), safe_div(p["비용"], p["지원서 제출"])
+        if pd.notna(cur_cps) and pd.notna(prev_cps):
+            cps_text = f"제출당 비용 {cur_cps:,.0f}원 (직전 {prev_cps:,.0f}원, {_signed_percent(pct_change(cur_cps, prev_cps))})"
+        elif pd.notna(cur_cps):
+            cps_text = f"제출당 비용 {cur_cps:,.0f}원 (직전 제출 없음)"
+        else:
+            cps_text = "제출당 비용 계산 불가 (제출 없음)"
+        lines.append(
+            f"{block}: 일평균 광고비 {_signed_percent(cost_change)} · 일평균 지원서 제출 {_signed_percent(submit_change)} · {cps_text}"
+        )
+    return lines
+
+
+def campaign_focus_lines(apps: pd.DataFrame, cur_start, cur_end, prev_start, prev_end, min_apps: int = 2) -> list:
+    """유료 매체의 캠페인·유입 소재 중 지원이 늘어난 곳은 집중, 0건으로 떨어진 곳은 점검하라는 문장을 만듭니다.
+
+    지원자(2.2 시트) 기준입니다. 광고비가 소재·캠페인 단위로 없으므로 CPA는 계산하지 않습니다.
+
+    Args:
+        apps: prepare_applicants() 결과 (유입소재, 캠페인 열 포함)
+        cur_start, cur_end: 선택 주 기간
+        prev_start, prev_end: 직전 주 기간
+        min_apps: 집중·점검 판단에 필요한 최소 지원 수 (표본이 적은 것은 제외)
+
+    Returns:
+        문장 목록. 기록이 없으면 빈 목록.
+    """
+    if apps is None or apps.empty or "지원일" not in apps.columns:
+        return []
+    counted_apps = apps[application_mask(apps)]
+    paid = counted_apps[counted_apps["매체그룹"].isin(PAID_CHANNEL_GROUPS)]
+    lines = []
+    for column, label in [("캠페인", "캠페인"), ("유입소재", "소재")]:
+        if column not in paid.columns:
+            continue
+        known = paid[~paid[column].str.upper().isin(UNKNOWN_TEXTS)]
+
+        def count_in(start, end):
+            """기간 안의 매체·항목별 지원 수를 셉니다."""
+            part = known[(known["지원일"] >= pd.Timestamp(start)) & (known["지원일"] <= pd.Timestamp(end))]
+            return part.groupby(["매체그룹", column]).size()
+
+        combined = pd.concat(
+            [count_in(cur_start, cur_end).rename("cur"), count_in(prev_start, prev_end).rename("prev")], axis=1
+        ).fillna(0)
+        if combined.empty:
+            continue
+        rising = combined[(combined["cur"] >= min_apps) & (combined["cur"] > combined["prev"])]
+        for (group, name), row in rising.sort_values("cur", ascending=False).head(2).iterrows():
+            lines.append(f"집중 후보 ({label}) {group} · {name}: 지원 {int(row['prev'])}명 → {int(row['cur'])}명")
+        falling = combined[(combined["prev"] >= min_apps) & (combined["cur"] == 0)]
+        for (group, name), row in falling.sort_values("prev", ascending=False).head(2).iterrows():
+            lines.append(f"점검 필요 ({label}) {group} · {name}: 지원 {int(row['prev'])}명 → 0명. 소재·랜딩을 확인하거나 중단을 검토하세요.")
+    return lines
+
+
 def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> dict:
     """선택 주의 광고비와 전환(CTA 클릭·지원서 제출)을 매체별로 요약하고, 효율 기준 제안 액션을 붙입니다.
 
@@ -844,25 +981,23 @@ def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> di
     Returns:
         {"headline": str, "spend_lines": [str], "difference_lines": [str], "actions": [str]}
     """
-    def sums(a, b):
-        """기간의 매체별 광고비·CTA 클릭·지원서 제출 합계를 구합니다."""
-        if wide is None or wide.empty:
-            return pd.DataFrame(columns=["비용", "CTA 클릭", "지원서 제출"])
-        part = wide[(wide["date"] >= pd.Timestamp(a)) & (wide["date"] <= pd.Timestamp(b))]
-        if part.empty:
-            return pd.DataFrame(columns=["비용", "CTA 클릭", "지원서 제출"])
-        return part.groupby("block")[["비용", "CTA 클릭", "지원서 제출"]].sum()
-
-    cur, prev = sums(start, end), sums(prev_start, prev_end)
+    cur, prev = period_block_sums(wide, start, end), period_block_sums(wide, prev_start, prev_end)
     if cur.empty:
-        return {"headline": "이번 주 광고 데이터가 없습니다.", "spend_lines": [], "difference_lines": [], "actions": []}
+        return {"headline": "선택 주 광고 데이터가 없습니다.", "spend_lines": [], "difference_lines": [], "actions": []}
     total = cur.sum()
     prev_cost = float(prev["비용"].sum()) if not prev.empty else 0.0
-    cost_change = pct_change(float(total["비용"]), prev_cost)
-    change_text = cost_change if isinstance(cost_change, str) else f"{cost_change:+.0f}%"
+    # 직전 주 데이터가 일부만 있을 수 있으므로 일평균으로 증감률을 봅니다 (7일치면 총액과 같습니다)
+    cur_days, prev_days = period_days(wide, start, end), period_days(wide, prev_start, prev_end)
+    if cur_days and prev_days:
+        cost_change = pct_change(float(total["비용"]) / cur_days, prev_cost / prev_days)
+    else:
+        cost_change = pct_change(float(total["비용"]), prev_cost)
+    change_text = _signed_percent(cost_change)
+    if cur_days and prev_days and cur_days != prev_days:
+        change_text += f", 일평균 기준 · 직전 주 {prev_days}일치"
     total_cps = safe_div(total["비용"], total["지원서 제출"])
     cps_text = f"{total_cps:,.0f}원" if pd.notna(total_cps) else "-"
-    headline = (f"이번 주 전체 광고비 {total['비용']:,.0f}원 (직전 주 대비 {change_text}), "
+    headline = (f"선택 주 전체 광고비 {total['비용']:,.0f}원 (직전 주 대비 {change_text}), "
                 f"지원서 제출 {total['지원서 제출']:,.0f}건, 제출당 비용 {cps_text}.")
     spend_lines, priced = [], {}
     for block, row in cur[cur["비용"] > 0].sort_values("비용", ascending=False).iterrows():
@@ -879,7 +1014,7 @@ def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> di
         difference_lines.append(f"효율 차이: 제출당 비용은 {low} {priced[low]:,.0f}원 vs {high} {priced[high]:,.0f}원입니다.")
     actions = efficiency_actions(wide, start, end)
     if not actions:
-        actions.append("이번 주는 매체 간 전환 효율 차이가 뚜렷하지 않습니다. 현재 집행을 유지하고 다음 주를 확인하세요.")
+        actions.append("선택 주는 매체 간 전환 효율 차이가 뚜렷하지 않습니다. 현재 집행을 유지하고 다음 주를 확인하세요.")
     return {"headline": headline, "spend_lines": spend_lines, "difference_lines": difference_lines, "actions": actions}
 
 

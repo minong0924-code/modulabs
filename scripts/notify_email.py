@@ -106,6 +106,7 @@ def main():
     parser.add_argument("--title", required=True, help="작업 이름")
     parser.add_argument("--status", required=True, help="success 이면 완료, 그 외는 실패")
     parser.add_argument("--detail", default="", help="추가 정보")
+    parser.add_argument("--detail-file", default="", help="본문 뒤에 붙일 텍스트 파일 (예: 사람 확인 항목)")
     args = parser.parse_args()
 
     config = load_mail_config()
@@ -113,8 +114,14 @@ def main():
         logger.info("메일 설정(MAIL_*)이 없어 이메일 알림을 건너뜁니다.")
         return
 
+    detail = args.detail
+    if args.detail_file and Path(args.detail_file).exists():
+        # 파일이 없거나 읽을 수 없어도 알림 자체는 보냄
+        extra = Path(args.detail_file).read_text(encoding="utf-8").strip()
+        detail = f"{detail}\n\n[사람 확인 필요]\n{extra}" if extra else detail
+
     recipients = [addr.strip() for addr in config["MAIL_TO"].split(",") if addr.strip()]
-    message = build_message(args.title, args.status, args.detail, config["MAIL_USER"], recipients)
+    message = build_message(args.title, args.status, detail, config["MAIL_USER"], recipients)
     if send(config, message):
         logger.info("이메일 알림 전송 완료")
 
