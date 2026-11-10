@@ -955,32 +955,46 @@ def spend_without_applicants(daily_group: pd.DataFrame, window: int = 7, min_sam
     return flagged
 
 
-WOW_METRIC_COLUMNS = ["비용", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
+WOW_METRIC_COLUMNS = ["비용", "CTA 클릭", "지원서 랜딩"]
 
 
-def weekly_comparison_table(wide: pd.DataFrame, last_week_start) -> pd.DataFrame:
+def weekly_comparison_table(wide: pd.DataFrame, last_week_start, applicants: pd.DataFrame = None) -> pd.DataFrame:
     """직전 주와 그 전주의 광고 지표를 나란히 놓고 WoW(전주 대비 증감률, %) 행을 붙입니다.
 
+    비용·CTA 클릭·지원서 랜딩은 광고 데이터(BigQuery)에서, 지원서 제출은 선택한 과정·기수 2.2 시트
+    '일자별 신청현황'의 신청자 행을 지원일 기준으로 셉니다. 매체 비고도 같은 신청자 행의 매체 그룹으로 만듭니다.
+
     Args:
-        wide: to_wide() 결과 (date, block, 비용, CTA 클릭, 지원서 랜딩, 지원서 제출 열)
+        wide: to_wide() 결과 (date, block, 비용, CTA 클릭, 지원서 랜딩 열)
         last_week_start: 직전 주(월요일)의 시작일
+        applicants: prepare_applicants() 결과 (지원일, 매체그룹 열). 없으면 지원서 제출을 0으로 둡니다
 
     Returns:
         행: 그 전주, 직전 주, WoW. 열: 기간, 일수, 비용 지출, CTA 클릭 합계, 지원서 랜딩 합계, 지원서 제출 합계, 비고.
-        비고는 해당 주 지원서 제출이 많은 매체 상위 3개입니다.
+        비고는 해당 주 지원서 제출이 많은 매체 그룹 상위 3개입니다.
     """
     last_start = pd.Timestamp(last_week_start)
+    has_wide = wide is not None and not wide.empty
+    has_apps = applicants is not None and not applicants.empty
     rows = []
     for start in [last_start - pd.Timedelta(days=7), last_start]:
         end = start + pd.Timedelta(days=6)
-        part = wide[(wide["date"] >= start) & (wide["date"] <= end)] if wide is not None and not wide.empty else wide
-        sums = part[WOW_METRIC_COLUMNS].sum() if part is not None and not part.empty else pd.Series(0.0, index=WOW_METRIC_COLUMNS)
-        submits = part.groupby("block")["지원서 제출"].sum().sort_values(ascending=False) if part is not None and not part.empty else pd.Series(dtype=float)
-        note = ", ".join(f"{block} {int(v):,}건" for block, v in submits[submits > 0].head(3).items())
+        part = wide[(wide["date"] >= start) & (wide["date"] <= end)] if has_wide else pd.DataFrame(columns=["date", *WOW_METRIC_COLUMNS])
+        sums = part[WOW_METRIC_COLUMNS].sum() if not part.empty else pd.Series(0.0, index=WOW_METRIC_COLUMNS)
+
+        if has_apps:
+            day_apps = applicants[(applicants["지원일"] >= start) & (applicants["지원일"] <= end)]
+            day_apps = day_apps[application_mask(day_apps)] if not day_apps.empty else day_apps
+            submit_count = float(len(day_apps))
+            groups = day_apps["매체그룹"].value_counts() if not day_apps.empty else pd.Series(dtype=float)
+        else:
+            submit_count = 0.0
+            groups = pd.Series(dtype=float)
+        note = ", ".join(f"{group} {int(v):,}건" for group, v in groups[groups > 0].head(3).items())
         rows.append({
             "기간": f"{start:%m.%d}~{end:%m.%d}", "일수": "7일",
             "비용 지출": float(sums["비용"]), "CTA 클릭 합계": float(sums["CTA 클릭"]),
-            "지원서 랜딩 합계": float(sums["지원서 랜딩"]), "지원서 제출 합계": float(sums["지원서 제출"]),
+            "지원서 랜딩 합계": float(sums["지원서 랜딩"]), "지원서 제출 합계": submit_count,
             "비고": note,
         })
     prev, cur = rows
