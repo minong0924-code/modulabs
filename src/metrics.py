@@ -970,7 +970,7 @@ def weekly_comparison_table(wide: pd.DataFrame, last_week_start, applicants: pd.
         applicants: prepare_applicants() 결과 (지원일, 매체그룹 열). 없으면 지원서 제출을 0으로 둡니다
 
     Returns:
-        행: 그 전주, 직전 주, WoW. 열: 기간, 일수, 비용 지출, CTA 클릭 합계, 지원서 랜딩 합계, 지원서 제출 합계, 비고.
+        행: 그 전주, 직전 주, WoW. 열: 기간, 비용 지출, CTA 클릭 합계, 지원서 랜딩 합계, 지원서 제출 합계, 비고.
         비고는 해당 주 지원서 제출이 많은 매체 그룹 상위 3개입니다.
     """
     last_start = pd.Timestamp(last_week_start)
@@ -992,13 +992,13 @@ def weekly_comparison_table(wide: pd.DataFrame, last_week_start, applicants: pd.
             groups = pd.Series(dtype=float)
         note = ", ".join(f"{group} {int(v):,}건" for group, v in groups[groups > 0].head(3).items())
         rows.append({
-            "기간": f"{start:%m.%d}~{end:%m.%d}", "일수": "7일",
+            "기간": f"{start:%m.%d}~{end:%m.%d}",
             "비용 지출": float(sums["비용"]), "CTA 클릭 합계": float(sums["CTA 클릭"]),
             "지원서 랜딩 합계": float(sums["지원서 랜딩"]), "지원서 제출 합계": submit_count,
             "비고": note,
         })
     prev, cur = rows
-    wow = {"기간": "WoW", "일수": "", "비고": ""}
+    wow = {"기간": "WoW", "비고": ""}
     for key in ["비용 지출", "CTA 클릭 합계", "지원서 랜딩 합계", "지원서 제출 합계"]:
         wow[key] = pct_change(cur[key], prev[key])
     return pd.DataFrame([rows[0], rows[1], wow])
