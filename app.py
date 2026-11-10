@@ -254,11 +254,11 @@ def last_full_week_start(latest) -> date:
     return start if latest_day >= start + timedelta(days=6) else start - timedelta(days=7)
 
 
-def render_wow_table(wide: pd.DataFrame, latest):
-    """직전 주와 그 전주의 광고 지표를 WoW 증감률과 함께 표로 보여 줍니다."""
+def render_wow_table(wide: pd.DataFrame, latest, applicants: pd.DataFrame):
+    """직전 주와 그 전주의 광고 지표를 WoW 증감률과 함께 표로 보여 줍니다. 지원서 제출은 2.2 시트 신청자 기준입니다."""
     last_week = last_full_week_start(latest)
     st.markdown(f"#### 📊 직전 주 vs 그 전주 (WoW): {last_week:%m.%d}~{last_week + timedelta(days=6):%m.%d}")
-    table = weekly_comparison_table(wide, last_week)
+    table = weekly_comparison_table(wide, last_week, applicants)
     money_like = ["비용 지출", "CTA 클릭 합계", "지원서 랜딩 합계", "지원서 제출 합계"]
     display = table.copy()
     for col in money_like:
@@ -650,7 +650,7 @@ def render_weekly():
         st.info("주차별 현황을 표시할 데이터가 없습니다. 지원자 시트와 광고 데이터(2.1, BigQuery) 연결을 확인해주세요.")
         return
 
-    render_wow_table(wide, data_latest)
+    render_wow_table(wide, data_latest, apps)
 
     week_starts = sorted({week_start_of(to_date(d)) for d in apps["지원일"].dropna()} |
                          {week_start_of(to_date(d)) for d in wide["date"].dropna()})
