@@ -663,8 +663,9 @@ def render_weekly():
     trend["지원"] = [len(counted(apps, w, w + pd.Timedelta(days=6))) for w in trend["week_start"]]
     st.plotly_chart(create_weekly_cost_applicant_chart(trend), use_container_width=True)
 
-    latest_ad_week = week_start_of(to_date(data_latest))
-    default_index = week_starts.index(latest_ad_week) if latest_ad_week in week_starts else len(week_starts) - 1
+    # 기본 선택은 마지막으로 끝난 주(월~일)입니다. 기준일이 속한 주는 데이터가 덜 쌓여 있어 기본으로 쓰지 않습니다.
+    last_full_week = last_full_week_start(data_latest)
+    default_index = week_starts.index(last_full_week) if last_full_week in week_starts else len(week_starts) - 1
     selected_week = st.selectbox(
         "주차 선택", options=week_starts, index=default_index,
         format_func=week_label,
@@ -708,7 +709,7 @@ def render_weekly():
             view[column] = view[column].map(fmt_change)
         show_table(view.round(1), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 🧭 이번 주 요약과 제안 액션 (지출 대비 전환 효율)")
+    st.markdown("#### 🧭 선택 주 요약과 제안 액션 (지출 대비 전환 효율)")
     narrative = weekly_narrative(wide, cur_start, cur_end, prev_start, prev_end)
     with st.container(border=True):
         st.markdown(f"**총평** {narrative['headline']}")
@@ -718,7 +719,7 @@ def render_weekly():
                 st.markdown(f"- {line}")
         for line in narrative["difference_lines"]:
             st.markdown(f"- {line}")
-        st.markdown("**이번 주 제안 액션**")
+        st.markdown("**선택 주 제안 액션**")
         for action in narrative["actions"]:
             st.markdown(f"- {action}")
 

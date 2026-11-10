@@ -855,14 +855,14 @@ def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> di
 
     cur, prev = sums(start, end), sums(prev_start, prev_end)
     if cur.empty:
-        return {"headline": "이번 주 광고 데이터가 없습니다.", "spend_lines": [], "difference_lines": [], "actions": []}
+        return {"headline": "선택 주 광고 데이터가 없습니다.", "spend_lines": [], "difference_lines": [], "actions": []}
     total = cur.sum()
     prev_cost = float(prev["비용"].sum()) if not prev.empty else 0.0
     cost_change = pct_change(float(total["비용"]), prev_cost)
     change_text = cost_change if isinstance(cost_change, str) else f"{cost_change:+.0f}%"
     total_cps = safe_div(total["비용"], total["지원서 제출"])
     cps_text = f"{total_cps:,.0f}원" if pd.notna(total_cps) else "-"
-    headline = (f"이번 주 전체 광고비 {total['비용']:,.0f}원 (직전 주 대비 {change_text}), "
+    headline = (f"선택 주 전체 광고비 {total['비용']:,.0f}원 (직전 주 대비 {change_text}), "
                 f"지원서 제출 {total['지원서 제출']:,.0f}건, 제출당 비용 {cps_text}.")
     spend_lines, priced = [], {}
     for block, row in cur[cur["비용"] > 0].sort_values("비용", ascending=False).iterrows():
@@ -879,7 +879,7 @@ def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> di
         difference_lines.append(f"효율 차이: 제출당 비용은 {low} {priced[low]:,.0f}원 vs {high} {priced[high]:,.0f}원입니다.")
     actions = efficiency_actions(wide, start, end)
     if not actions:
-        actions.append("이번 주는 매체 간 전환 효율 차이가 뚜렷하지 않습니다. 현재 집행을 유지하고 다음 주를 확인하세요.")
+        actions.append("선택 주는 매체 간 전환 효율 차이가 뚜렷하지 않습니다. 현재 집행을 유지하고 다음 주를 확인하세요.")
     return {"headline": headline, "spend_lines": spend_lines, "difference_lines": difference_lines, "actions": actions}
 
 
