@@ -371,8 +371,6 @@ if isinstance(period_value, tuple) and len(period_value) == 2:
 else:
     period_start, period_end = range_min, range_max
 
-media_options = sorted(apps["매체그룹"].unique()) if not apps.empty else []
-selected_media = st.sidebar.multiselect("매체 (표 필터)", options=media_options, default=media_options)
 st.sidebar.markdown("---")
 st.sidebar.caption(f"기준 시각 {now_kst:%Y-%m-%d %H:%M}")
 if apps.empty:
@@ -510,8 +508,7 @@ def render_overview():
             st.caption(f"예산 소진율 {spent_rate:.0f}% · 모집 기간 경과율 {elapsed:.0f}%")
 
     scope_apps = counted(apps)  # 모집 기간 밖 지원자 포함 (이관 건 제외)
-    scope_apps = scope_apps[scope_apps["매체그룹"].isin(selected_media)] if selected_media else scope_apps.iloc[0:0]
-    st.markdown("#### 🚫 탈락·포기 사유 (매체 필터 적용)")
+    st.markdown("#### 🚫 탈락·포기 사유")
     reasons = rejection_by_reason(scope_apps)
     if reasons.empty:
         st.info("탈락·포기 기록이 없습니다.")
@@ -530,7 +527,7 @@ def render_media():
         return
 
     st.markdown("#### 🧭 매체별 전형 현황")
-    # 매체 필터는 이 표에 적용하지 않습니다. 광고비가 있는 매체는 지원자가 없어도 행으로 남깁니다.
+    # 광고비가 있는 매체는 지원자가 없어도 행으로 남깁니다.
     scope_apps = counted(apps)  # 모집 기간 밖 지원자 포함 (이관 건 제외)
     quality = channel_quality_table(scope_apps)
     cost_table = group_period_table(apps, wide, ALL_TIME_START, ALL_TIME_END)  # 광고비·CPA도 전체 기간 기준
@@ -557,10 +554,8 @@ def render_media():
         })
         show_table(view.round(1), use_container_width=True, hide_index=True)
 
-    # 아래 지원자 기준 표(서류 불합격·메타 소재)는 매체 필터를 적용합니다
-    filtered_apps = scope_apps[scope_apps["매체그룹"].isin(selected_media)] if selected_media else scope_apps.iloc[0:0]
     st.markdown("#### 🧾 매체별 서류 불합격 사유")
-    doc_reasons = rejection_by_reason(filtered_apps, by="매체그룹")
+    doc_reasons = rejection_by_reason(scope_apps, by="매체그룹")
     if not doc_reasons.empty:
         doc_reasons = doc_reasons[doc_reasons["탈락구분"] == REJECTION_KIND_DOC]
     if doc_reasons.empty:
@@ -576,7 +571,7 @@ def render_media():
         show_table(pivot, use_container_width=True, hide_index=True)
 
     st.markdown("#### 🎨 메타 소재별 현황 (2.2 시트 기준, 광고비 연결 없음)")
-    meta = filtered_apps[filtered_apps["매체그룹"] == "메타"]
+    meta = scope_apps[scope_apps["매체그룹"] == "메타"]
     if meta.empty or "유입 소재 및 키워드" not in meta.columns:
         st.info("메타 유입 지원자가 없습니다.")
     else:
@@ -694,8 +689,7 @@ def render_weekly():
     if comp.empty:
         st.info("선택한 주에 광고비나 지원 데이터가 없습니다.")
     else:
-        # 광고비는 매체 필터와 무관하게 모두 집계합니다 (필터를 걸면 광고비 합계가 빠지는 문제 방지).
-        # 매체 필터는 지원자 표(아래 '선택 주차에 지원한 사람들')에만 적용합니다.
+        # 광고비는 모든 매체를 집계합니다.
         total_row = {
             "매체": "전체", "광고비": comp["광고비"].sum(), "광고비 직전": comp["광고비 직전"].sum(),
             "지원": comp["지원"].sum(), "지원 직전": comp["지원 직전"].sum(),
@@ -729,7 +723,6 @@ def render_weekly():
             st.markdown(f"- {action}")
 
     week_apps = counted(apps, cur_start, cur_end)
-    week_apps = week_apps[week_apps["매체그룹"].isin(selected_media)] if selected_media else week_apps.iloc[0:0]
     st.markdown("#### 🧑‍💼 선택 주에 지원한 사람들의 현재 전형 결과 (지원일 기준)")
     if week_apps.empty:
         st.info("선택한 주에 지원자가 없습니다.")
