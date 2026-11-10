@@ -54,6 +54,7 @@ from src.inflow_loader import (
 )
 from src.metrics import (
     REJECTION_KIND_DOC,
+    weekly_comparison_table,
     UNCLASSIFIED,
     ad_coverage,
     application_mask,
@@ -241,6 +242,31 @@ def counted(apps: pd.DataFrame, start=None, end=None, include_pre: bool = False)
 def week_label(week_start: date) -> str:
     """주 시작일을 'YYYY-MM-DD ~ MM-DD' 형식으로 바꿉니다."""
     return f"{week_start:%Y-%m-%d} ~ {(week_start + timedelta(days=6)):%m-%d}"
+
+
+def last_full_week_start(latest) -> date:
+    """데이터 기준일 기준으로 마지막으로 끝난 주(월~일)의 시작일을 반환합니다.
+
+    기준일이 일요일이면 그 주가 끝난 것으로 보고, 아니면 한 주 앞을 씁니다.
+    """
+    latest_day = to_date(latest)
+    start = week_start_of(latest_day)
+    return start if latest_day >= start + timedelta(days=6) else start - timedelta(days=7)
+
+
+def render_wow_table(wide: pd.DataFrame, latest):
+    """직전 주와 그 전주의 광고 지표를 WoW 증감률과 함께 표로 보여 줍니다."""
+    last_week = last_full_week_start(latest)
+    st.markdown(f"#### 📊 직전 주 vs 그 전주 (WoW): {last_week:%m.%d}~{last_week + timedelta(days=6):%m.%d}")
+    table = weekly_comparison_table(wide, last_week)
+    money_like = ["비용 지출", "CTA 클릭 합계", "지원서 랜딩 합계", "지원서 제출 합계"]
+    display = table.copy()
+    for col in money_like:
+        display[col] = [
+            fmt_change(v) if key == "WoW" else f"{v:,.0f}"
+            for key, v in zip(table["기간"], table[col])
+        ]
+    show_table(display, use_container_width=True, hide_index=True)
 
 
 def render_insights(insights: list):
@@ -617,6 +643,8 @@ def render_weekly():
     if apps.empty or wide.empty:
         st.info("주차별 현황을 표시할 데이터가 없습니다. 지원자 시트와 광고 데이터(2.1, BigQuery) 연결을 확인해주세요.")
         return
+
+    render_wow_table(wide, data_latest)
 
     week_starts = sorted({week_start_of(to_date(d)) for d in apps["지원일"].dropna()} |
                          {week_start_of(to_date(d)) for d in wide["date"].dropna()})
