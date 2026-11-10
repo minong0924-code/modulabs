@@ -576,6 +576,74 @@ class WeeklyNarrativeTest(unittest.TestCase):
         self.assertTrue(r["actions"])
 
 
+class WeeklySummaryTest(unittest.TestCase):
+    """이번 주 요약 카드용 함수: 일평균 비교, 매체별 변화, 소재·캠페인 집중 인사이트"""
+
+    def setUp(self):
+        # 직전 주(10/26~11/1)는 10/29~11/1 4일치만 있고, 선택 주(11/2~11/8)는 7일치 있음
+        rows = []
+        for day in range(29, 32):
+            rows.append((f"2026-10-{day}", "메타", 100_000.0, 2.0))
+        rows.append(("2026-11-01", "메타", 100_000.0, 2.0))
+        for day in range(2, 9):
+            rows.append((f"2026-11-{day:02d}", "메타", 100_000.0, 1.0))
+            rows.append((f"2026-11-{day:02d}", "ChatGPT DA", 50_000.0, 0.0))
+        frame = pd.DataFrame(rows, columns=["date", "block", "비용", "지원서 제출"])
+        frame["date"] = pd.to_datetime(frame["date"])
+        frame["CTA 클릭"] = 0.0
+        self.wide = frame
+        self.cur = ("2026-11-02", "2026-11-08")
+        self.prev = ("2026-10-26", "2026-11-01")
+
+    def test_period_days_counts_only_days_with_data(self):
+        self.assertEqual(m.period_days(self.wide, *self.prev), 4)
+        self.assertEqual(m.period_days(self.wide, *self.cur), 7)
+        self.assertEqual(m.period_days(self.wide, "2026-09-01", "2026-09-07"), 0)
+
+    def test_headline_uses_daily_average_when_prev_week_is_partial(self):
+        """직전 주가 4일치면 총액 비교가 아니라 일평균으로 증감률을 씁니다"""
+        narrative = m.weekly_narrative(self.wide, *self.cur, *self.prev)
+        # 선택 주 일평균 광고비 150,000원(메타 10만 + ChatGPT 5만), 직전 주 일평균 100,000원
+        self.assertIn("+50%", narrative["headline"])
+        self.assertIn("일평균 기준", narrative["headline"])
+
+    def test_block_wow_uses_daily_rates_and_cost_per_submit(self):
+        lines = m.block_wow_lines(self.wide, *self.cur, *self.prev)
+        meta = next(line for line in lines if line.startswith("메타:"))
+        # 메타 일평균 광고비 100,000 → 직전 100,000 (0%), 일평균 제출 1.0 → 직전 2.0 (-50%)
+        self.assertIn("일평균 광고비 +0%", meta)
+        self.assertIn("일평균 지원서 제출 -50%", meta)
+        self.assertIn("제출당 비용 100,000원 (직전 50,000원, +100%)", meta)
+        chatgpt = next(line for line in lines if line.startswith("ChatGPT DA:"))
+        self.assertIn("신규 발생", chatgpt)
+        self.assertIn("제출당 비용 계산 불가", chatgpt)
+
+    def test_block_wow_empty_without_data(self):
+        self.assertEqual(m.block_wow_lines(self.wide, "2026-09-01", "2026-09-07", "2026-08-25", "2026-08-31"), [])
+
+    def test_prepare_applicants_keeps_material_and_campaign(self):
+        apps = _apps([_row(**{"신청자 이름": "a", "유입 채널": "메타", "유입 소재 및 키워드": "newtruth", "캠페인 구분": "conversion_x"})])
+        self.assertEqual(apps.iloc[0]["유입소재"], "newtruth")
+        self.assertEqual(apps.iloc[0]["캠페인"], "conversion_x")
+
+    def test_campaign_focus_rising_and_falling(self):
+        apps = _apps([
+            _row(**{"신청자 이름": f"c{i}", "일자": "2026-11-03", "유입 채널": "메타", "캠페인 구분": "conversion_lal"}) for i in range(3)
+        ] + [
+            _row(**{"신청자 이름": f"p{i}", "일자": "2026-10-28", "유입 채널": "구글 DA", "캠페인 구분": "Pmax_old"}) for i in range(2)
+        ] + [
+            _row(**{"신청자 이름": "u", "일자": "2026-11-03", "유입 채널": "메타", "캠페인 구분": "missing"}),
+            _row(**{"신청자 이름": "d", "일자": "2026-11-03", "유입 채널": "직접 지원", "캠페인 구분": "brand"}),
+        ])
+        lines = m.campaign_focus_lines(apps, *self.cur, *self.prev)
+        self.assertTrue(any("집중 후보 (캠페인) 메타 · conversion_lal: 지원 0명 → 3명" in line for line in lines), lines)
+        self.assertTrue(any("점검 필요 (캠페인) 구글 DA · Pmax_old: 지원 2명 → 0명" in line for line in lines), lines)
+        self.assertFalse(any("missing" in line or "brand" in line for line in lines), lines)
+
+    def test_campaign_focus_empty_without_applicants(self):
+        self.assertEqual(m.campaign_focus_lines(m.prepare_applicants(pd.DataFrame()), *self.cur, *self.prev), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 
