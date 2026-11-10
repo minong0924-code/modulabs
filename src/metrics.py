@@ -953,3 +953,38 @@ def spend_without_applicants(daily_group: pd.DataFrame, window: int = 7, min_sam
         if r_cost > 0 and p_apps >= min_sample and r_apps <= p_apps * drop_ratio:
             flagged.append({"매체": group, "최근 비용": float(r_cost), "최근 지원": int(r_apps), "직전 지원": int(p_apps)})
     return flagged
+
+
+WOW_METRIC_COLUMNS = ["비용", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
+
+
+def weekly_comparison_table(wide: pd.DataFrame, last_week_start) -> pd.DataFrame:
+    """직전 주와 그 전주의 광고 지표를 나란히 놓고 WoW(전주 대비 증감률, %) 행을 붙입니다.
+
+    Args:
+        wide: to_wide() 결과 (date, block, 비용, CTA 클릭, 지원서 랜딩, 지원서 제출 열)
+        last_week_start: 직전 주(월요일)의 시작일
+
+    Returns:
+        행: 그 전주, 직전 주, WoW. 열: 기간, 일수, 비용 지출, CTA 클릭 합계, 지원서 랜딩 합계, 지원서 제출 합계, 비고.
+        비고는 해당 주 지원서 제출이 많은 매체 상위 3개입니다.
+    """
+    last_start = pd.Timestamp(last_week_start)
+    rows = []
+    for start in [last_start - pd.Timedelta(days=7), last_start]:
+        end = start + pd.Timedelta(days=6)
+        part = wide[(wide["date"] >= start) & (wide["date"] <= end)] if wide is not None and not wide.empty else wide
+        sums = part[WOW_METRIC_COLUMNS].sum() if part is not None and not part.empty else pd.Series(0.0, index=WOW_METRIC_COLUMNS)
+        submits = part.groupby("block")["지원서 제출"].sum().sort_values(ascending=False) if part is not None and not part.empty else pd.Series(dtype=float)
+        note = ", ".join(f"{block} {int(v):,}건" for block, v in submits[submits > 0].head(3).items())
+        rows.append({
+            "기간": f"{start:%m.%d}~{end:%m.%d}", "일수": "7일",
+            "비용 지출": float(sums["비용"]), "CTA 클릭 합계": float(sums["CTA 클릭"]),
+            "지원서 랜딩 합계": float(sums["지원서 랜딩"]), "지원서 제출 합계": float(sums["지원서 제출"]),
+            "비고": note,
+        })
+    prev, cur = rows
+    wow = {"기간": "WoW", "일수": "", "비고": ""}
+    for key in ["비용 지출", "CTA 클릭 합계", "지원서 랜딩 합계", "지원서 제출 합계"]:
+        wow[key] = pct_change(cur[key], prev[key])
+    return pd.DataFrame([rows[0], rows[1], wow])
