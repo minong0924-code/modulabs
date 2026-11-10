@@ -530,13 +530,22 @@ def render_media():
         return
 
     st.markdown("#### 🧭 매체별 전형 현황")
+    # 매체 필터는 이 표에 적용하지 않습니다. 광고비가 있는 매체는 지원자가 없어도 행으로 남깁니다.
     scope_apps = counted(apps)  # 모집 기간 밖 지원자 포함 (이관 건 제외)
-    scope_apps = scope_apps[scope_apps["매체그룹"].isin(selected_media)] if selected_media else scope_apps.iloc[0:0]
     quality = channel_quality_table(scope_apps)
+    cost_table = group_period_table(apps, wide, ALL_TIME_START, ALL_TIME_END)  # 광고비·CPA도 전체 기간 기준
+    applied_groups = set(quality["매체그룹"]) if "매체그룹" in quality.columns else set()
+    ad_only = [m for m in cost_table["매체"] if m not in applied_groups] if not cost_table.empty else []
+    if ad_only:
+        # 광고비만 있는 매체: 지원자 수는 0, 비율 지표는 계산 불가(NaN)로 둡니다
+        filler = pd.DataFrame({"매체그룹": ad_only})
+        quality = pd.concat([quality, filler], ignore_index=True)
+        for column in ["지원", "서류결과확정", "진행중", "확정", "최종합격_누적"]:
+            if column in quality.columns:
+                quality[column] = quality[column].fillna(0)
     if quality.empty:
         st.info("지원자가 없습니다.")
     else:
-        cost_table = group_period_table(apps, wide, ALL_TIME_START, ALL_TIME_END)  # 광고비·CPA도 전체 기간 기준
         cost_map = cost_table.set_index("매체")["광고비"].to_dict() if not cost_table.empty else {}
         cpa_map = cost_table.set_index("매체")["지원 CPA"].to_dict() if not cost_table.empty else {}
         quality["광고비"] = quality["매체그룹"].map(cost_map)
@@ -548,8 +557,10 @@ def render_media():
         })
         show_table(view.round(1), use_container_width=True, hide_index=True)
 
+    # 아래 지원자 기준 표(서류 불합격·메타 소재)는 매체 필터를 적용합니다
+    filtered_apps = scope_apps[scope_apps["매체그룹"].isin(selected_media)] if selected_media else scope_apps.iloc[0:0]
     st.markdown("#### 🧾 매체별 서류 불합격 사유")
-    doc_reasons = rejection_by_reason(scope_apps, by="매체그룹")
+    doc_reasons = rejection_by_reason(filtered_apps, by="매체그룹")
     if not doc_reasons.empty:
         doc_reasons = doc_reasons[doc_reasons["탈락구분"] == REJECTION_KIND_DOC]
     if doc_reasons.empty:
@@ -565,7 +576,7 @@ def render_media():
         show_table(pivot, use_container_width=True, hide_index=True)
 
     st.markdown("#### 🎨 메타 소재별 현황 (2.2 시트 기준, 광고비 연결 없음)")
-    meta = scope_apps[scope_apps["매체그룹"] == "메타"]
+    meta = filtered_apps[filtered_apps["매체그룹"] == "메타"]
     if meta.empty or "유입 소재 및 키워드" not in meta.columns:
         st.info("메타 유입 지원자가 없습니다.")
     else:
