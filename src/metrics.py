@@ -786,6 +786,7 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
     최종 합격 판정(final_media_verdict)과 충돌하지 않도록 다음을 따릅니다.
     - final_weak(최종 합격 저조) 매체는 제출 효율이 좋아도 증액하지 않고, 이관 대상에서도 뺍니다.
     - final_strong(최종 합격 우수) 매체는 제출 효율이 나빠도 중단 대신 입찰·타겟 조정을 먼저 권합니다.
+    - 축소·중단 대상만 남으면 옮길 곳(검증된 운영 매체)과 운영 테스트 후보(미운영 매체)를 덧붙입니다.
 
     Args:
         wide: 광고 일별 데이터 (date, block, 비용, CTA 클릭, 지원서 제출 열)
@@ -821,6 +822,7 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
     best_block = min(transfer_cps, key=transfer_cps.get) if transfer_cps else None
 
     actions = []
+    cut_blocks, grow_blocks = set(), set()  # 축소·중단을 권한 매체와 증액을 권한 매체
     for block, row in agg.iterrows():
         share = row["비용"] / total_cost * 100
         if share < min_share:
@@ -840,6 +842,7 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
                       if best_block and best_block != block else "")
             actions.append(f"{block}: 광고비 {row['비용']:,.0f}원을 쓰고 지원서 제출이 0건입니다. 타 매체 평균 제출당 비용은 "
                            f"{others_cps:,.0f}원입니다. 광고를 OFF(중단)하는 것을 검토하세요.{target}")
+            cut_blocks.add(block)
             continue
         cps = cps_all[block]
         if cps >= others_cps * weak_ratio:
@@ -851,6 +854,7 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
                 note = " 다만 최종 합격 효율은 우수하므로 중단보다 입찰·타겟 조정을 먼저 검토하세요."
             else:
                 note = " 광고 중단 또는 축소를 검토하세요."
+                cut_blocks.add(block)
             actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)의 "
                            f"{cps / others_cps:.1f}배입니다. 약한 구간은 {weak_stage}입니다.{note}{target}")
         elif cps <= others_cps * strong_ratio:
@@ -860,13 +864,59 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
                         if proven_costs else "")
                 actions.append(f"{block}: 제출당 비용은 {cps:,.0f}원으로 낮지만 최종 합격 효율이 저조합니다. "
                                f"지원자가 최종 합격으로 이어지지 않아 증액하지 않고, 광고비 축소와 타겟·소재 점검을 검토하세요.{move}")
+                cut_blocks.add(block)
             elif block in final_unrated:
                 actions.append(f"{block}: 제출당 비용은 {cps:,.0f}원으로 낮지만 최종 합격 근거가 아직 부족합니다. "
                                "최종 합격이 확인될 때까지 증액은 보류하고 최종 합격 추이를 지켜보세요.")
             else:
                 actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)보다 "
                                f"{(1 - cps / others_cps) * 100:.0f}% 낮습니다. 예산 증액을 검토하세요.")
+                grow_blocks.add(block)
+    # 주력 매체가 모두 축소·중단 대상이면 예산을 옮길 곳과 테스트 후보를 함께 제안합니다
+    if cut_blocks and not grow_blocks:
+        overall_cps = safe_div(float(agg["비용"].sum()), float(agg["지원서 제출"].sum()))
+        actions.extend(_alternative_actions(agg, cut_blocks, final_weak, final_strong, final_unrated,
+                                            valid_cps, overall_cps, weak_ratio))
     return actions
+
+
+def _alternative_actions(agg: pd.DataFrame, cut_blocks: set, final_weak: set, final_strong: set,
+                         final_unrated: set, valid_cps: dict, overall_cps: float, weak_ratio: float) -> list:
+    """축소·중단 대상만 남았을 때 옮길 곳(현재 운영 매체)과 운영 테스트 후보를 제안합니다.
+
+    - 옮길 곳: 축소 대상이 아니고, 최종 합격 효율이 검증된(final_strong) 현재 운영 매체 중
+      제출당 비용이 전체 평균의 weak_ratio배 미만인 매체 가운데 가장 낮은 매체.
+      검증된 매체가 없으면 증액하지 않고 현 집행을 유지합니다 (최종 합격 근거 부족).
+    - 테스트 후보: MATCHED_AD_GROUPS 중 이번 기간 광고비가 없는 매체. 효율 데이터가 없으므로 소액 테스트를 권합니다.
+
+    Args:
+        agg: 매체별 합계 (비용, CTA 클릭, 지원서 제출 열, 매체명 인덱스)
+        cut_blocks: 축소·중단 대상 매체 집합
+        final_weak, final_strong, final_unrated: 최종 합격 판정 집합
+        valid_cps: 제출당 비용이 계산된 매체별 값
+        overall_cps: 전체 제출당 비용 (전체 광고비 ÷ 전체 지원서 제출)
+        weak_ratio: 저조 판단 배율
+
+    Returns:
+        "대안 · ..." 또는 "운영 테스트 후보 · ..." 문장 목록
+    """
+    notes = []
+    running = [b for b in agg.index if b not in cut_blocks and b not in final_weak]
+    proven = [b for b in running if b in final_strong and b in valid_cps and valid_cps[b] < overall_cps * weak_ratio]
+    if proven:
+        best = min(proven, key=valid_cps.get)
+        notes.append(f"대안 · 현재 운영 매체 중 최종 합격 효율이 우수한 {best}(제출당 {valid_cps[best]:,.0f}원)로 "
+                     "축소 예산 일부를 옮기고, 증액 효과를 최종 합격 기준으로 확인하세요.")
+    elif running:
+        notes.append(f"대안 · 현재 운영 매체({', '.join(running)}) 중 최종 합격으로 검증된 곳이 없어 옮길 곳을 정하지 않았습니다. "
+                     "증액하지 말고 현 집행을 유지하며 최종 합격 근거가 쌓이기를 기다리세요.")
+    else:
+        notes.append("대안 · 현재 운영 매체가 모두 축소 대상이라 옮길 곳이 없습니다. 축소 전에 최종 합격 추이를 먼저 확인하세요.")
+    not_running = [g for g in MATCHED_AD_GROUPS if g not in agg.index]
+    if not_running:
+        notes.append(f"운영 테스트 후보 · 이번 기간 광고비가 없는 {', '.join(not_running)}은 소액으로 테스트하고, "
+                     "최종 합격 기준으로 효율을 판단하세요. 이번 기간 데이터가 없어 효율은 아직 알 수 없습니다.")
+    return notes
 
 
 MIN_FINAL_FOR_RANKING = 3  # 최종 합격이 이 값 이상이면 매체 간 순위로 저조·우수를 가립니다
