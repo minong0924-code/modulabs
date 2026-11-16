@@ -25,6 +25,7 @@ from src.config import COURSES  # noqa: E402
 
 TABLE_ID = f"{s.BQ_PROJECT}.Modulabs_internal_DB.dash_daily_inflow"
 SHEET_NAME = "2.1 일자별 유입현황"
+READ_INTERVAL_SECONDS = 6  # 시트 한 개 읽은 뒤 대기 (Sheets 분당 읽기 한도 대응)
 # 시트 지표 이름 -> 저장 지표 이름 (클릭율·전환율 등 계산 열은 제외)
 METRICS = ["비용", "노출", "클릭", "페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
 SCHEMA = [
@@ -103,6 +104,30 @@ def parse_sheet(grid):
     return dict(values)
 
 
+def read_grid_with_retry(gs, sheet_id, label, attempts=5):
+    """2.1 시트를 읽습니다. 읽기 한도(429)면 대기 후 다시 시도하고, 끝까지 실패하면 예외를 던집니다.
+
+    Args:
+        gs: gspread 클라이언트
+        sheet_id: 과정·기수 스프레드시트 ID
+        label: 로그에 쓸 과정·기수 이름
+        attempts: 최대 시도 횟수
+
+    Returns:
+        문자열로 바꾼 2차원 격자 (시트 값)
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            sheet = gs.open_by_key(sheet_id).worksheet(SHEET_NAME)
+            return [[str(c) for c in r] for r in sheet.get_all_values(value_render_option="UNFORMATTED_VALUE")]
+        except Exception as error:
+            if attempt == attempts:
+                raise RuntimeError(f"{label} 2.1 시트 읽기 실패 ({attempts}회 시도): {error}") from error
+            wait = 65 if "429" in str(error) else 10
+            print(f"{label} 읽기 실패, {wait}초 후 재시도 ({attempt}/{attempts}): {str(error)[:80]}", flush=True)
+            time.sleep(wait)
+
+
 def collect_rows(gs, snapshot_at):
     """모든 과정·기수의 2.1 시트를 읽어 BigQuery 행 목록을 만듭니다.
 
@@ -116,13 +141,8 @@ def collect_rows(gs, snapshot_at):
     rows = []
     for course_id, course in COURSES.items():
         for semester, cohort in course["cohorts"].items():
-            try:
-                sheet = gs.open_by_key(cohort["sheet_id"]).worksheet(SHEET_NAME)
-                grid = [[str(c) for c in r] for r in sheet.get_all_values(value_render_option="UNFORMATTED_VALUE")]
-                time.sleep(2)
-            except Exception as error:  # 한 기수 실패가 전체를 막지 않도록 건너뜁니다
-                print(f"{course_id} {semester}기 건너뜀: {type(error).__name__} {str(error)[:120]}", flush=True)
-                continue
+            grid = read_grid_with_retry(gs, cohort["sheet_id"], f"{course_id} {semester}기")
+            time.sleep(READ_INTERVAL_SECONDS)  # 읽기 한도(분당) 소진을 피하려고 간격을 둡니다
             values = parse_sheet(grid)
             for (day, block, metric), value in values.items():
                 rows.append({
@@ -150,6 +170,13 @@ def main():
         print("드라이런 또는 데이터 없음: BigQuery에 쓰지 않습니다.", flush=True)
         return
     bq = bigquery.Client(project=s.BQ_PROJECT, credentials=s.get_credentials(s.BQ_SCOPES))
+    # 기존 테이블에 있던 과정·기수가 새 데이터에서 빠지면 덮어쓰지 않습니다 (일부 실패로 데이터가 사라지는 것 방지)
+    existing = {(r["course_id"], r["semester"]) for r in bq.query(
+        f"SELECT DISTINCT course_id, semester FROM `{TABLE_ID}`").result()}
+    fresh = {(r["course_id"], r["semester"]) for r in rows}
+    missing = sorted(existing - fresh)
+    if missing and "--force" not in sys.argv:
+        raise RuntimeError(f"새 데이터에 없는 기존 과정·기수가 있어 적재를 중단합니다: {missing} (의도한 제외라면 --force)")
     job_config = bigquery.LoadJobConfig(schema=SCHEMA, write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
     bq.load_table_from_json(rows, TABLE_ID, job_config=job_config).result()
     print(f"적재 완료: {TABLE_ID} ({len(rows)}행)", flush=True)

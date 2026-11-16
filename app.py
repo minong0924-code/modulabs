@@ -67,6 +67,7 @@ from src.metrics import (
     recommended_actions,
     small_sample_checklist,
     efficiency_actions,
+    final_admission_lines,
     weekly_narrative,
     compare_group_tables,
     group_period_table,
@@ -675,6 +676,12 @@ def render_week_summary(wide: pd.DataFrame, apps: pd.DataFrame, cur_start, cur_e
                 st.markdown(f"- {line}")
         for line in narrative["difference_lines"]:
             st.markdown(f"- {line}")
+        # 지원서 제출이 아니라 최종 합격 기준으로 본 매체 효율 (주 종료일까지 누적)
+        admission_lines = final_admission_lines(apps, wide, cur_end)
+        if admission_lines:
+            st.markdown("**최종 합격 기준 매체 효율 (광고 시작일~선택 주 종료일 누적)**")
+            for line in admission_lines:
+                st.markdown(f"- {line}")
         st.markdown("**선택 주 제안 액션**")
         for action in narrative["actions"]:
             st.markdown(f"- {action}")
