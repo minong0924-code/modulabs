@@ -772,7 +772,9 @@ def recommended_actions(note: str) -> str:
 
 
 def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float = 1.5,
-                       strong_ratio: float = 0.67, min_share: float = 5.0) -> list:
+                       strong_ratio: float = 0.67, min_share: float = 5.0,
+                       final_weak: set = frozenset(), final_strong: set = frozenset(),
+                       final_unrated: set = frozenset()) -> list:
     """지출 대비 전환을 타 매체와 비교해 중단·예산 이관·증액을 제안합니다. 지원 수(2.2 시트)는 쓰지 않습니다.
 
     기준 지표는 전환 1건당 비용입니다(지원서 제출당 비용, CTA 클릭당 비용). 타 매체 전체 평균과 비교합니다.
@@ -781,9 +783,15 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
       약한 구간(CTA 단계 또는 지원서 단계)을 함께 짚습니다.
     - 제출당 비용이 타 매체 평균의 strong_ratio배 이하: 우수 — 증액을 검토합니다.
     광고비 비중이 min_share% 미만인 매체는 제외합니다.
+    최종 합격 판정(final_media_verdict)과 충돌하지 않도록 다음을 따릅니다.
+    - final_weak(최종 합격 저조) 매체는 제출 효율이 좋아도 증액하지 않고, 이관 대상에서도 뺍니다.
+    - final_strong(최종 합격 우수) 매체는 제출 효율이 나빠도 중단 대신 입찰·타겟 조정을 먼저 권합니다.
 
     Args:
         wide: 광고 일별 데이터 (date, block, 비용, CTA 클릭, 지원서 제출 열)
+        final_weak: 최종 합격 저조 매체 집합
+        final_strong: 최종 합격 우수 매체 집합
+        final_unrated: 최종 합격 근거가 부족해 판정하지 못한 매체 집합 (증액 보류)
         cur_start, cur_end: 판단 기간 (일자별은 최근 3일, 주차별은 선택 주)
         weak_ratio: 저조 판단 배율
         strong_ratio: 우수 판단 배율
@@ -807,7 +815,10 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
     cps_all = {b: safe_div(r["비용"], r["지원서 제출"]) for b, r in agg.iterrows()}
     cpc_all = {b: safe_div(r["비용"], r["CTA 클릭"]) for b, r in agg.iterrows()}
     valid_cps = {b: v for b, v in cps_all.items() if pd.notna(v)}
-    best_block = min(valid_cps, key=valid_cps.get) if valid_cps else None
+    transfer_cps = {b: v for b, v in valid_cps.items() if b not in final_weak}
+    proven = {b: v for b, v in transfer_cps.items() if b in final_strong}
+    transfer_cps = proven  # 최종 합격이 검증된 매체가 없으면 이관 대상을 정하지 않습니다
+    best_block = min(transfer_cps, key=transfer_cps.get) if transfer_cps else None
 
     actions = []
     for block, row in agg.iterrows():
@@ -820,6 +831,11 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
         others_cps = others["비용"] / others["지원서 제출"]
         others_cpc = safe_div(others["비용"], others["CTA 클릭"])
         if row["지원서 제출"] == 0:
+            if block in final_strong or block in final_unrated:
+                actions.append(f"{block}: 광고비 {row['비용']:,.0f}원을 썼지만 광고 데이터의 지원서 제출은 0건입니다. "
+                               "지원자 명단(2.2)에는 등록된 지원자와 최종 합격이 있으니, 중단 전에 전환 추적"
+                               "(지원서 제출 집계)부터 확인하세요.")
+                continue
             target = (f" 제출당 비용이 가장 낮은 {best_block}({valid_cps[best_block]:,.0f}원)로 예산 이관을 검토하세요."
                       if best_block and best_block != block else "")
             actions.append(f"{block}: 광고비 {row['비용']:,.0f}원을 쓰고 지원서 제출이 0건입니다. 타 매체 평균 제출당 비용은 "
@@ -831,77 +847,133 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
             weak_stage = "유입→CTA 단계" if pd.notna(cpc_ratio) and cpc_ratio >= weak_ratio else "CTA 이후 지원서 단계"
             target = (f" 광고비의 약 50%({row['비용'] * 0.5:,.0f}원)를 제출당 비용이 가장 낮은 {best_block}"
                       f"({valid_cps[best_block]:,.0f}원)로 옮기는 것을 검토하세요.") if best_block and best_block != block else ""
+            if block in final_strong:
+                note = " 다만 최종 합격 효율은 우수하므로 중단보다 입찰·타겟 조정을 먼저 검토하세요."
+            else:
+                note = " 광고 중단 또는 축소를 검토하세요."
             actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)의 "
-                           f"{cps / others_cps:.1f}배입니다. 약한 구간은 {weak_stage}입니다. 광고 중단 또는 축소를 검토하세요.{target}")
+                           f"{cps / others_cps:.1f}배입니다. 약한 구간은 {weak_stage}입니다.{note}{target}")
         elif cps <= others_cps * strong_ratio:
-            actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)보다 "
-                           f"{(1 - cps / others_cps) * 100:.0f}% 낮습니다. 예산 증액을 검토하세요.")
+            if block in final_weak:
+                proven_costs = {b: v for b, v in valid_cps.items() if b in final_strong}
+                move = (f" 예산 일부는 최종 합격 효율이 우수한 {min(proven_costs, key=proven_costs.get)}로 옮기는 것을 검토하세요."
+                        if proven_costs else "")
+                actions.append(f"{block}: 제출당 비용은 {cps:,.0f}원으로 낮지만 최종 합격 효율이 저조합니다. "
+                               f"지원자가 최종 합격으로 이어지지 않아 증액하지 않고, 광고비 축소와 타겟·소재 점검을 검토하세요.{move}")
+            elif block in final_unrated:
+                actions.append(f"{block}: 제출당 비용은 {cps:,.0f}원으로 낮지만 최종 합격 근거가 아직 부족합니다. "
+                               "최종 합격이 확인될 때까지 증액은 보류하고 최종 합격 추이를 지켜보세요.")
+            else:
+                actions.append(f"{block}: 제출당 비용이 {cps:,.0f}원으로 타 매체 평균({others_cps:,.0f}원)보다 "
+                               f"{(1 - cps / others_cps) * 100:.0f}% 낮습니다. 예산 증액을 검토하세요.")
     return actions
 
 
-def final_admission_lines(apps: pd.DataFrame, wide: pd.DataFrame, end, min_share: float = 5.0,
-                          weak_ratio: float = 1.5) -> list:
-    """최종 합격 기준으로 매체 효율을 봅니다. 광고 집행 시작일부터 end까지 누적한 값으로 비교합니다.
+MIN_FINAL_FOR_RANKING = 3  # 최종 합격이 이 값 이상이면 매체 간 순위로 저조·우수를 가립니다
 
-    지원서 제출이 많아도 최종 합격이 나오지 않는 매체는 비적합으로 보고, 최종 합격 1명당 광고비가
-    가장 낮은 매체로 예산을 옮기도록 권합니다. 최종 합격은 지원 이후에 생기므로 최근 지원자는 아직
-    전형 중일 수 있어 누적 기준으로만 판단합니다.
+
+def final_media_verdict(apps: pd.DataFrame, wide: pd.DataFrame, end, min_share: float = 5.0,
+                        weak_ratio: float = 1.5, strong_ratio: float = 0.67) -> dict:
+    """최종 합격 기준으로 매체를 저조·우수로 나누고 요약 문장을 만듭니다. 광고 시작일부터 end까지 누적합니다.
+
+    저조: 지원자가 MIN_SAMPLE_FOR_INSIGHT명 이상인데 최종 합격 0명이거나, 최종 합격당 광고비가 매체 전체 평균의 weak_ratio배 이상.
+    우수: 최종 합격당 광고비가 전체 평균의 strong_ratio배 이하.
+    최종 합격이 전체 MIN_SAMPLE_FOR_INSIGHT명 미만이면 우수·저조 판정은 참고용이라 비우고 문장만 남깁니다.
+    지원서 제출 효율은 이 판정과 별개로 efficiency_actions가 보고, 두 결과를 합쳐 최종 액션을 만듭니다.
 
     Args:
         apps: prepare_applicants() 결과 (매체그룹, 지원일, 누적_최종합격 열)
         wide: to_wide() 결과 (date, block, 비용 열)
         end: 누적 종료일 (선택 주 종료일)
         min_share: 광고비 비중 최소치(%) — 이보다 작은 매체는 제외합니다
-        weak_ratio: 최종 합격당 비용이 이 배율 이상 차이 나면 이관을 권합니다
+        weak_ratio: 저조 판단 배율
+        strong_ratio: 우수 판단 배율
 
     Returns:
-        매체별 요약 문장과 제안 문장 목록. 광고 데이터가 없으면 빈 목록.
+        {"lines": [문장], "weak": {매체}, "strong": {매체}, "unrated": {매체}, "sufficient": bool}
     """
+    empty = {"lines": [], "weak": set(), "strong": set(), "unrated": set(), "sufficient": False}
     if apps is None or apps.empty or wide is None or wide.empty or "누적_최종합격" not in apps.columns:
-        return []
+        return empty
     end = pd.Timestamp(end)
     ad = wide[wide["date"] <= end]
     if ad.empty:
-        return []
+        return empty
     cost = ad.groupby("block")["비용"].sum()
     total_cost = float(cost.sum())
     if total_cost <= 0:
-        return []
+        return empty
     start = ad["date"].min()
     counted = apps[application_mask(apps)]
     counted = counted[(counted["지원일"] >= start) & (counted["지원일"] <= end)]
     stats = counted.groupby("매체그룹").agg(지원=("누적_최종합격", "size"), 최종=("누적_최종합격", "sum"))
 
-    lines, final_cpa, flags = [], {}, []
+    rows = []
     for group in MATCHED_AD_GROUPS:
         group_cost = float(cost.get(group, 0.0))
-        share = group_cost / total_cost * 100 if total_cost else 0.0
+        share = group_cost / total_cost * 100
         if group_cost <= 0 or share < min_share:
             continue
         apps_n = int(stats.loc[group, "지원"]) if group in stats.index else 0
         final_n = int(stats.loc[group, "최종"]) if group in stats.index else 0
-        cpa = safe_div(group_cost, final_n)
-        if pd.notna(cpa):
-            final_cpa[group] = cpa
-        cpa_text = f"{cpa:,.0f}원" if pd.notna(cpa) else "합격 없음"
-        lines.append(f"{group}: 누적 광고비 {group_cost:,.0f}원 ({share:.0f}%) · 지원 {apps_n:,}명 · "
-                     f"최종 합격 {final_n:,}명 · 최종 합격당 광고비 {cpa_text}")
-        if final_n == 0 and apps_n >= MIN_SAMPLE_FOR_INSIGHT:
-            flags.append(f"비적합 의심 · {group}: 지원 {apps_n}명을 받았지만 최종 합격이 0명입니다. "
-                         f"광고비 비중 {share:.0f}%를 줄이거나 중단하고, 타겟·소재·지원 조건을 점검하세요.")
-        elif final_n == 0 and apps_n < MIN_SAMPLE_FOR_INSIGHT:
-            flags.append(f"표본 적음 · {group}: 지원 {apps_n}명·최종 합격 0명이라 아직 판단하기 어렵습니다.")
+        rows.append({"group": group, "cost": group_cost, "share": share, "apps": apps_n, "final": final_n,
+                     "cpa": safe_div(group_cost, final_n)})
+    if not rows:
+        return empty
 
     total_final = int(counted["누적_최종합격"].sum()) if not counted.empty else 0
-    if total_final < MIN_SAMPLE_FOR_INSIGHT:
-        flags.append(f"참고 · 최종 합격이 전체 {total_final}명뿐이라 매체별 차이는 참고용으로만 보세요.")
-    if len(final_cpa) >= 2:
-        best, worst = min(final_cpa, key=final_cpa.get), max(final_cpa, key=final_cpa.get)
-        if final_cpa[worst] >= final_cpa[best] * weak_ratio:
-            flags.append(f"최종 합격 효율: {best} {final_cpa[best]:,.0f}원 vs {worst} {final_cpa[worst]:,.0f}원 "
-                         f"(최종 합격당 비용 {final_cpa[worst] / final_cpa[best]:.1f}배). "
-                         f"{worst} 예산 일부를 {best}로 옮기는 것을 검토하세요.")
-    return lines + flags
+    sufficient = total_final >= MIN_SAMPLE_FOR_INSIGHT
+    matched_cost = sum(r["cost"] for r in rows)
+    matched_final = sum(r["final"] for r in rows)
+    overall_cpa = safe_div(matched_cost, matched_final)
+
+    lines, flags, weak, strong = [], [], set(), set()
+    for r in rows:
+        cpa_text = f"{r['cpa']:,.0f}원" if pd.notna(r["cpa"]) else "합격 없음"
+        lines.append(f"{r['group']}: 누적 광고비 {r['cost']:,.0f}원 ({r['share']:.0f}%) · 지원 {r['apps']:,}명 · "
+                     f"최종 합격 {r['final']:,}명 · 최종 합격당 광고비 {cpa_text}")
+        if r["final"] == 0 and r["apps"] >= MIN_SAMPLE_FOR_INSIGHT:
+            weak.add(r["group"])
+            flags.append(f"비적합 의심 · {r['group']}: 지원 {r['apps']}명을 받았지만 최종 합격이 0명입니다. "
+                         f"지원서 제출이 많아도 비적합 지원자를 데려온 것이므로 광고비 비중 {r['share']:.0f}%를 축소하고, "
+                         "타겟·소재·지원 조건을 점검하세요.")
+        elif r["final"] == 0:
+            flags.append(f"표본 적음 · {r['group']}: 지원 {r['apps']}명·최종 합격 0명이라 아직 판단하기 어렵습니다.")
+
+    # 최종 합격이 있는 매체끼리 순위를 매깁니다. 가장 싼 매체는 우수, 가장 비싸고 배율 이상이면 저조입니다.
+    ranking_ok = total_final >= MIN_FINAL_FOR_RANKING
+    priced = {r["group"]: r["cpa"] for r in rows if pd.notna(r["cpa"])}
+    if ranking_ok and len(priced) >= 2:
+        best_g, worst_g = min(priced, key=priced.get), max(priced, key=priced.get)
+        strong.add(best_g)
+        if priced[worst_g] >= priced[best_g] * weak_ratio:
+            weak.add(worst_g)
+
+    if not sufficient:
+        flags.append(f"참고 · 최종 합격이 전체 {total_final}명뿐이라 표본이 적습니다. "
+                     "아래 방향은 최종 합격 순위를 따르며, 합격이 쌓이면 달라질 수 있습니다.")
+    if ranking_ok and weak and strong:
+        worst_g = max(priced, key=priced.get)
+        best_g = min(priced, key=priced.get)
+        flags.append(f"최종 합격 효율: {best_g} {priced[best_g]:,.0f}원 vs {worst_g} {priced[worst_g]:,.0f}원 "
+                     f"(최종 합격당 비용 {priced[worst_g] / priced[best_g]:.1f}배). "
+                     f"{worst_g} 예산 일부를 {best_g}로 옮기는 것을 검토하세요.")
+    unrated = {r["group"] for r in rows} - weak - strong
+    return {"lines": lines + flags, "weak": weak, "strong": strong, "unrated": unrated, "sufficient": sufficient}
+
+
+def final_admission_lines(apps: pd.DataFrame, wide: pd.DataFrame, end) -> list:
+    """최종 합격 판정의 문장 목록만 돌려줍니다. 자세한 기준은 final_media_verdict를 봅니다.
+
+    Args:
+        apps: prepare_applicants() 결과
+        wide: to_wide() 결과
+        end: 누적 종료일
+
+    Returns:
+        문장 목록 (광고 데이터가 없으면 빈 목록)
+    """
+    return final_media_verdict(apps, wide, end)["lines"]
 
 
 def period_days(wide: pd.DataFrame, start, end) -> int:
@@ -1035,7 +1107,9 @@ def campaign_focus_lines(apps: pd.DataFrame, cur_start, cur_end, prev_start, pre
     return lines
 
 
-def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> dict:
+def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end,
+                     final_weak: set = frozenset(), final_strong: set = frozenset(),
+                     final_unrated: set = frozenset()) -> dict:
     """선택 주의 광고비와 전환(CTA 클릭·지원서 제출)을 매체별로 요약하고, 효율 기준 제안 액션을 붙입니다.
 
     Args:
@@ -1077,7 +1151,8 @@ def weekly_narrative(wide: pd.DataFrame, start, end, prev_start, prev_end) -> di
     if len(priced) >= 2:
         low, high = min(priced, key=priced.get), max(priced, key=priced.get)
         difference_lines.append(f"효율 차이: 제출당 비용은 {low} {priced[low]:,.0f}원 vs {high} {priced[high]:,.0f}원입니다.")
-    actions = efficiency_actions(wide, start, end)
+    actions = efficiency_actions(wide, start, end, final_weak=final_weak, final_strong=final_strong,
+                                 final_unrated=final_unrated)
     if not actions:
         actions.append("선택 주는 매체 간 전환 효율 차이가 뚜렷하지 않습니다. 현재 집행을 유지하고 다음 주를 확인하세요.")
     return {"headline": headline, "spend_lines": spend_lines, "difference_lines": difference_lines, "actions": actions}

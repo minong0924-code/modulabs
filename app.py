@@ -67,7 +67,7 @@ from src.metrics import (
     recommended_actions,
     small_sample_checklist,
     efficiency_actions,
-    final_admission_lines,
+    final_media_verdict,
     weekly_narrative,
     compare_group_tables,
     group_period_table,
@@ -661,7 +661,11 @@ def render_week_summary(wide: pd.DataFrame, apps: pd.DataFrame, cur_start, cur_e
     if 0 < prev_days < 7:
         st.warning(f"직전 주({prev_start:%m.%d}~{prev_end:%m.%d})는 광고 데이터가 {prev_days}일치뿐입니다. "
                    "증감률은 일평균 기준으로 비교합니다.")
-    narrative = weekly_narrative(wide, cur_start, cur_end, prev_start, prev_end)
+    # 최종 합격 판정을 먼저 구해, 제출 기준 액션과 같은 결론이 나오도록 넘깁니다
+    verdict = final_media_verdict(apps, wide, cur_end)
+    narrative = weekly_narrative(wide, cur_start, cur_end, prev_start, prev_end,
+                                 final_weak=verdict["weak"], final_strong=verdict["strong"],
+                                 final_unrated=verdict["unrated"])
     wow_lines = block_wow_lines(wide, cur_start, cur_end, prev_start, prev_end)
     focus_lines = campaign_focus_lines(apps, cur_start, cur_end, prev_start, prev_end)
     with st.container(border=True):
@@ -677,7 +681,7 @@ def render_week_summary(wide: pd.DataFrame, apps: pd.DataFrame, cur_start, cur_e
         for line in narrative["difference_lines"]:
             st.markdown(f"- {line}")
         # 지원서 제출이 아니라 최종 합격 기준으로 본 매체 효율 (주 종료일까지 누적)
-        admission_lines = final_admission_lines(apps, wide, cur_end)
+        admission_lines = verdict["lines"]
         if admission_lines:
             st.markdown("**최종 합격 기준 매체 효율 (광고 시작일~선택 주 종료일 누적)**")
             for line in admission_lines:
@@ -727,7 +731,10 @@ def render_course_digest(course_id: str):
     for name, semester, cohort_bundle, periods in items:
         cur_start, cur_end = periods["current"]
         prev_start, prev_end = periods["previous"]
-        narrative = weekly_narrative(cohort_bundle["wide"], cur_start, cur_end, prev_start, prev_end)
+        verdict = final_media_verdict(cohort_bundle["apps"], cohort_bundle["wide"], cur_end)
+        narrative = weekly_narrative(cohort_bundle["wide"], cur_start, cur_end, prev_start, prev_end,
+                                     final_weak=verdict["weak"], final_strong=verdict["strong"],
+                                     final_unrated=verdict["unrated"])
         with st.expander(f"{name} {semester}기 · {week_label(cur_start)} · {narrative['headline']}"):
             render_week_summary(cohort_bundle["wide"], cohort_bundle["apps"], cur_start, cur_end, prev_start, prev_end)
 
