@@ -15,21 +15,37 @@ PATHS = {"ai_agent": ["/ai-agent"], "ai_data_intel": ["/ai-data"], "private_ai":
 RAW_KEYS = {"ai_agent": ["에이전트", "agent"], "ai_data_intel": ["인텔리전스", "intelligence"], "private_ai": ["프라이빗", "private"],
             "data_analysis": ["재직자(데이터)", "edata"], "planning_dev": ["재직자(기획개발)", "egigae"], "ai_researcher": ["리서처", "researcher", "airesea"]}
 # 대행사 raw 캠페인유형 -> 2.1 매체 블록 (배율 포함)
-RAW_MEDIA = {"메타": "메타", "구글 실적최대화": "구글 DA", "구글디멘드젠": "구글 DA", "구글 검색": "구글 SA", "네이버 검색": "네이버 SA", "카카오": "카카오 DA", "카카오(무상캐시)": "카카오 DA", "타겟팅게이츠": "타게팅게이츠", "챗지피티": "ChatGPT DA"}
+RAW_MEDIA = {"메타": "메타", "구글 실적최대화": "구글 DA", "구글디멘드젠": "구글 DA", "구글 검색": "구글 SA", "네이버 검색": "네이버 SA", "카카오": "카카오 DA", "카카오(무상캐시)": "카카오 DA", "타겟팅게이츠": "타게팅게이츠", "챗지피티": "ChatGPT DA", "네이버 파워컨텐츠": "네이버 파워콘텐츠"}
 GA_METRICS = ["페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
 MEDIA_METRICS = ["비용", "노출", "클릭"]
 AGENCY = {"ai_researcher": "1dxIAJNq_RpJQGWJDsqpzpFZK6VcnhdNSeyR1A8A_vu4", "ai_agent": "1Z_7mnZTkFcrj5eHVeGu7LtqSTOB7696E0XxaRzaZVuQ", "ai_data_intel": "1Z_7mnZTkFcrj5eHVeGu7LtqSTOB7696E0XxaRzaZVuQ", "private_ai": "1Z_7mnZTkFcrj5eHVeGu7LtqSTOB7696E0XxaRzaZVuQ", "data_analysis": "1vYMBImjzZVWTsnjn9wJLUdpZWvra_OpAoFRIwTrdTwM", "planning_dev": "1vYMBImjzZVWTsnjn9wJLUdpZWvra_OpAoFRIwTrdTwM"}
 EVENT = {"페이지뷰": "page_view", "CTA 클릭": "Apply_click_cta", "지원서 랜딩": "Apply_step1", "지원서 제출": "Apply_step2"}
 # ChatGPT 광고 블록 (GA 소스 ChatGPT / da, 대행사 raw 매체 '챗지피티')
 CHATGPT_BLOCK = "ChatGPT DA"
+# 네이버 파워콘텐츠 광고 블록 (대행사 raw 매체 '네이버 파워컨텐츠', 아이펠 리서처 등).
+# GA 귀속: naver / blog_all + 캠페인 researcher_20th (modulabs / blog_all 은 자사 블로그라 제외)
+POWER_CONTENT_BLOCK = "네이버 파워콘텐츠"
+POWER_CONTENT_GA = ("naver", "blog_all", "researcher_20th")
+# 시트에 새로 만들 수 있는 광고 블록 목록 (행 2 이름이 없으면 맨 오른쪽에 추가)
+NEW_BLOCKS = [CHATGPT_BLOCK, POWER_CONTENT_BLOCK]
 # 블록 한 개의 열 구성 (비용부터 지원서 제출까지, 전환율은 바로 앞 지표 대비)
 BLOCK_HEADERS = ["비용", "노출", "클릭", "클릭율", "페이지뷰", "CTA 클릭", "전환율", "지원서 랜딩", "전환율", "지원서 제출", "전환율"]
 # 페이드(총합) 블록이 더하는 지표 (클릭율·전환율은 합계에서 다시 계산)
 PAID_SUM_METRICS = ["비용", "노출", "클릭", "페이지뷰", "CTA 클릭", "지원서 랜딩", "지원서 제출"]
 
 
-def block_of(source, medium, campaign):
-    """GA (source, medium, campaign) -> 2.1 블록 이름. 구글 검색은 PMAX·디멘드젠이 아닌 구글 광고, B2B는 제외."""
+def block_of(source, medium, campaign, power_content=False):
+    """GA (source, medium, campaign) -> 2.1 블록 이름. 구글 검색은 PMAX·디멘드젠이 아닌 구글 광고, B2B는 제외.
+
+    Args:
+        source: GA 소스
+        medium: GA 매체
+        campaign: GA 캠페인명
+        power_content: True면 리서처 20기 파워콘텐츠 귀속을 켭니다 (그 외 기수는 오가닉 유지)
+
+    Returns:
+        2.1 블록 이름 (제외 대상이면 None)
+    """
     c = (campaign or "").lower()
     if (source, medium) == ("google", "cpc"):
         if "pmax" in c or "dgen" in c: return "구글 DA"
@@ -37,6 +53,7 @@ def block_of(source, medium, campaign):
         return "구글 SA"
     if (source or "").lower() == "chatgpt" and (medium or "").lower() == "da": return CHATGPT_BLOCK
     if (source, medium) == ("naver", "cpc"): return "네이버 SA"
+    if power_content and (source, medium, c) == POWER_CONTENT_GA: return POWER_CONTENT_BLOCK
     if (source, medium) == ("kakao", "cpc"): return "카카오 DA"
     if (source, medium) == ("meta", "da"): return "메타"
     if (source, medium) == ("targetinggates", "da"): return "타게팅게이츠"
@@ -44,7 +61,19 @@ def block_of(source, medium, campaign):
     return "오가닉"
 
 
-def ga_counts(bq, course, start, end):
+def ga_counts(bq, course, start, end, power_content=False):
+    """과정 페이지의 GA 이벤트를 (일자, 블록, 지표)별 고유 사용자 수로 집계합니다.
+
+    Args:
+        bq: BigQuery 클라이언트
+        course: 과정 ID
+        start: 집계 시작일
+        end: 집계 종료일
+        power_content: 리서처 20기 파워콘텐츠 귀속 사용 여부
+
+    Returns:
+        {(일자, 블록, 지표): 사용자 수} dict
+    """
     paths = " OR ".join(f"REGEXP_EXTRACT(page_location, r'https?://[^/]+([^?#]*)') LIKE '{p}%'" for p in PATHS[course])
     sql = f"""
     SELECT DATE(TIMESTAMP_MICROS(event_timestamp), 'Asia/Seoul') AS d, event_name, user_pseudo_id,
@@ -61,7 +90,7 @@ def ga_counts(bq, course, start, end):
         bigquery.ScalarQueryParameter("e", "STRING", end.strftime("%Y%m%d"))]))
     out = defaultdict(set)
     for r in job.result():
-        blk = block_of(r["src"], r["med"], r["camp"])
+        blk = block_of(r["src"], r["med"], r["camp"], power_content=power_content)
         if not blk: continue
         for metric, ev in EVENT.items():
             if r["event_name"] == ev:
@@ -135,8 +164,8 @@ def col_letter(index):
     return text
 
 
-def ensure_chatgpt_block(ws, grid):
-    """2.1 시트 맨 오른쪽에 ChatGPT DA 블록을 만들고 페이드(총합) 합계에 포함합니다. 이미 있으면 아무것도 하지 않습니다.
+def ensure_block(ws, grid, block_name):
+    """2.1 시트 맨 오른쪽에 광고 블록을 만들고 페이드(총합) 합계에 포함합니다. 이미 있으면 아무것도 하지 않습니다.
 
     블록 구성은 메타·구글 DA 블록과 같습니다(비용·노출·클릭·클릭율·페이지뷰·CTA·랜딩·제출, 전환율은 앞 지표 대비).
     데이터 행(5행부터)은 수식으로, 합계 행은 SUM으로 채웁니다. 비용·노출·클릭·GA 지표 값은 이후 run_cohort가 채웁니다.
@@ -144,11 +173,12 @@ def ensure_chatgpt_block(ws, grid):
     Args:
         ws: 2.1 일자별 유입현황 워크시트
         grid: FORMULA 모드로 읽은 시트 값 (행 리스트)
+        block_name: 만들 블록 이름 (행 2에 기록됨)
 
     Returns:
         새로 만들었으면 True
     """
-    if CHATGPT_BLOCK in [str(v).strip() for v in grid[1]]:
+    if block_name in [str(v).strip() for v in grid[1]]:
         return False
     start = max(len(grid[1]), len(grid[3]))  # 현재 마지막 열 다음 (0-based)
     width = len(BLOCK_HEADERS)
@@ -162,7 +192,7 @@ def ensure_chatgpt_block(ws, grid):
     sum_cols = (0, 1, 2, 4, 5, 7, 9)
 
     updates = [
-        {"range": f"{col(0)}2:{col(width - 1)}2", "values": [[CHATGPT_BLOCK] + [""] * (width - 1)]},
+        {"range": f"{col(0)}2:{col(width - 1)}2", "values": [[block_name] + [""] * (width - 1)]},
         {"range": f"{col(0)}3:{col(width - 1)}3", "values": [["매체", "", "", "", "GA 기준"] + [""] * (width - 5)]},
         {"range": f"{col(0)}4:{col(width - 1)}4", "values": [BLOCK_HEADERS]},
     ]
@@ -197,11 +227,15 @@ def run_cohort(cid, sem, start, end, gs, bq, apply):
     ws = sh.worksheet("2.1 일자별 유입현황")
     grid = [[str(c) for c in r] for r in ws.get_all_values(value_render_option="FORMULA")]
     time.sleep(3)
-    if apply and ensure_chatgpt_block(ws, grid):
-        print(f"{cid} {sem}기: {CHATGPT_BLOCK} 블록 추가", flush=True)
-        time.sleep(3)
-        grid = [[str(c) for c in r] for r in ws.get_all_values(value_render_option="FORMULA")]
-    ga = ga_counts(bq, cid, start, end)
+    if apply:
+        added = [name for name in NEW_BLOCKS if ensure_block(ws, grid, name)]
+        if added:
+            print(f"{cid} {sem}기: {', '.join(added)} 블록 추가", flush=True)
+            time.sleep(3)
+            grid = [[str(c) for c in r] for r in ws.get_all_values(value_render_option="FORMULA")]
+    # 파워콘텐츠 GA 귀속은 리서처 20기에만 적용 (원래 오가닉 유입 건)
+    power_content = (cid, sem) == ("ai_researcher", 20)
+    ga = ga_counts(bq, cid, start, end, power_content=power_content)
     media = raw_media(cid, start, end, gs)
     # 블록 시작 열 (행 2의 블록 이름) -> 행 4의 지표 이름으로 열 위치 찾기
     h2, h4 = grid[1], grid[3]
@@ -210,7 +244,7 @@ def run_cohort(cid, sem, start, end, gs, bq, apply):
     for idx, (c0, name) in enumerate(starts):
         c1 = starts[idx + 1][0] if idx + 1 < len(starts) else len(h4)
         cols[name.strip()] = {h4[j].strip(): j for j in range(c0, c1) if h4[j].strip()}
-    KNOWN = {"오가닉", "메타", "구글 DA", "구글 SA", "네이버 SA", "카카오 DA", "타게팅게이츠", "틱톡", CHATGPT_BLOCK}
+    KNOWN = {"오가닉", "메타", "구글 DA", "구글 SA", "네이버 SA", "카카오 DA", "타게팅게이츠", "틱톡", CHATGPT_BLOCK, POWER_CONTENT_BLOCK}
     def canon(name):
         if name.startswith("카카오"): return "카카오 DA"  # 카카오 모먼트·비즈보드 모두 카카오 DA
         if name.startswith("타게팅") or name.startswith("타겟팅"): return "타게팅게이츠"
