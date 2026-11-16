@@ -839,6 +839,71 @@ def efficiency_actions(wide: pd.DataFrame, cur_start, cur_end, weak_ratio: float
     return actions
 
 
+def final_admission_lines(apps: pd.DataFrame, wide: pd.DataFrame, end, min_share: float = 5.0,
+                          weak_ratio: float = 1.5) -> list:
+    """최종 합격 기준으로 매체 효율을 봅니다. 광고 집행 시작일부터 end까지 누적한 값으로 비교합니다.
+
+    지원서 제출이 많아도 최종 합격이 나오지 않는 매체는 비적합으로 보고, 최종 합격 1명당 광고비가
+    가장 낮은 매체로 예산을 옮기도록 권합니다. 최종 합격은 지원 이후에 생기므로 최근 지원자는 아직
+    전형 중일 수 있어 누적 기준으로만 판단합니다.
+
+    Args:
+        apps: prepare_applicants() 결과 (매체그룹, 지원일, 누적_최종합격 열)
+        wide: to_wide() 결과 (date, block, 비용 열)
+        end: 누적 종료일 (선택 주 종료일)
+        min_share: 광고비 비중 최소치(%) — 이보다 작은 매체는 제외합니다
+        weak_ratio: 최종 합격당 비용이 이 배율 이상 차이 나면 이관을 권합니다
+
+    Returns:
+        매체별 요약 문장과 제안 문장 목록. 광고 데이터가 없으면 빈 목록.
+    """
+    if apps is None or apps.empty or wide is None or wide.empty or "누적_최종합격" not in apps.columns:
+        return []
+    end = pd.Timestamp(end)
+    ad = wide[wide["date"] <= end]
+    if ad.empty:
+        return []
+    cost = ad.groupby("block")["비용"].sum()
+    total_cost = float(cost.sum())
+    if total_cost <= 0:
+        return []
+    start = ad["date"].min()
+    counted = apps[application_mask(apps)]
+    counted = counted[(counted["지원일"] >= start) & (counted["지원일"] <= end)]
+    stats = counted.groupby("매체그룹").agg(지원=("누적_최종합격", "size"), 최종=("누적_최종합격", "sum"))
+
+    lines, final_cpa, flags = [], {}, []
+    for group in MATCHED_AD_GROUPS:
+        group_cost = float(cost.get(group, 0.0))
+        share = group_cost / total_cost * 100 if total_cost else 0.0
+        if group_cost <= 0 or share < min_share:
+            continue
+        apps_n = int(stats.loc[group, "지원"]) if group in stats.index else 0
+        final_n = int(stats.loc[group, "최종"]) if group in stats.index else 0
+        cpa = safe_div(group_cost, final_n)
+        if pd.notna(cpa):
+            final_cpa[group] = cpa
+        cpa_text = f"{cpa:,.0f}원" if pd.notna(cpa) else "합격 없음"
+        lines.append(f"{group}: 누적 광고비 {group_cost:,.0f}원 ({share:.0f}%) · 지원 {apps_n:,}명 · "
+                     f"최종 합격 {final_n:,}명 · 최종 합격당 광고비 {cpa_text}")
+        if final_n == 0 and apps_n >= MIN_SAMPLE_FOR_INSIGHT:
+            flags.append(f"비적합 의심 · {group}: 지원 {apps_n}명을 받았지만 최종 합격이 0명입니다. "
+                         f"광고비 비중 {share:.0f}%를 줄이거나 중단하고, 타겟·소재·지원 조건을 점검하세요.")
+        elif final_n == 0 and apps_n < MIN_SAMPLE_FOR_INSIGHT:
+            flags.append(f"표본 적음 · {group}: 지원 {apps_n}명·최종 합격 0명이라 아직 판단하기 어렵습니다.")
+
+    total_final = int(counted["누적_최종합격"].sum()) if not counted.empty else 0
+    if total_final < MIN_SAMPLE_FOR_INSIGHT:
+        flags.append(f"참고 · 최종 합격이 전체 {total_final}명뿐이라 매체별 차이는 참고용으로만 보세요.")
+    if len(final_cpa) >= 2:
+        best, worst = min(final_cpa, key=final_cpa.get), max(final_cpa, key=final_cpa.get)
+        if final_cpa[worst] >= final_cpa[best] * weak_ratio:
+            flags.append(f"최종 합격 효율: {best} {final_cpa[best]:,.0f}원 vs {worst} {final_cpa[worst]:,.0f}원 "
+                         f"(최종 합격당 비용 {final_cpa[worst] / final_cpa[best]:.1f}배). "
+                         f"{worst} 예산 일부를 {best}로 옮기는 것을 검토하세요.")
+    return lines + flags
+
+
 def period_days(wide: pd.DataFrame, start, end) -> int:
     """기간 안에서 광고 데이터가 있는 날짜 수를 셉니다. 직전 주가 일부만 있는지 확인할 때 씁니다.
 
