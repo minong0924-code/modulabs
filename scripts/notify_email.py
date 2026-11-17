@@ -115,10 +115,18 @@ def main():
         return
 
     detail = args.detail
-    if args.detail_file and Path(args.detail_file).exists():
-        # 파일이 없거나 읽을 수 없어도 알림 자체는 보냄
-        extra = Path(args.detail_file).read_text(encoding="utf-8").strip()
-        detail = f"{detail}\n\n[사람 확인 필요]\n{extra}" if extra else detail
+    if args.detail_file:
+        detail_path = Path(args.detail_file)
+        if detail_path.exists():
+            extra = detail_path.read_text(encoding="utf-8").strip()
+            detail = f"{detail}\n\n[사람 확인 필요]\n{extra}" if extra else detail
+        else:
+            # 확인 목록 파일이 없으면 실행이 중간에 끊긴 것이므로, 누락을 메일에서 알 수 있게 경고를 붙임
+            detail = (
+                f"{detail}\n\n[사람 확인 필요]\n"
+                "확인 목록 파일이 없습니다. 실행이 중간에 중단됐을 수 있으니 "
+                "이관 인원과 기록 실패 여부를 로그에서 직접 확인하세요."
+            )
 
     recipients = [addr.strip() for addr in config["MAIL_TO"].split(",") if addr.strip()]
     message = build_message(args.title, args.status, detail, config["MAIL_USER"], recipients)
