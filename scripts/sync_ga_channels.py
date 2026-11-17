@@ -984,6 +984,9 @@ def main():
     mode = "APPLY" if args.apply else "DRY-RUN"
     logger.info("실행 모드: %s, 기간: %s ~ %s", mode, start, end)
 
+    # 이전 실행의 확인 목록이 남아 메일에 잘못 실리지 않도록 먼저 삭제 (실행이 중단되면 파일이 없어 메일에서 알 수 있음)
+    HUMAN_CHECK_PATH.unlink(missing_ok=True)
+
     bq_client = bigquery.Client(project=BQ_PROJECT, credentials=get_credentials(BQ_SCOPES))
     gs_client = gspread.authorize(get_credentials(SHEETS_SCOPES))
     ensure_log_table(bq_client)
@@ -1069,10 +1072,26 @@ def main():
             logger.info("  %s → %s", update["range"], update["values"][0][0])
 
         if args.apply and updates:
-            worksheet.batch_update(updates, value_input_option="RAW")
-            copy_row_formats(worksheet, format_src, appended_rows)
+            try:
+                worksheet.batch_update(updates, value_input_option="RAW")
+            except Exception:
+                # 한 기수의 기록 실패가 다른 과정 처리와 이관 인원 확인을 막지 않도록 건너뜀
+                logger.exception("[%s] 시트 값 기록 실패, 다음 기수로 넘어감", label)
+                human_check.append(f"[기록 실패] {label}: 시트 값 기록에 실패했습니다 (로그 확인 후 재실행 필요)")
+                continue
+            try:
+                copy_row_formats(worksheet, format_src, appended_rows)
+            except Exception:
+                # 서식 복사 실패(예: 필터로 숨겨진 행 포함)는 이미 기록된 값을 되돌리지 않고 메일 확인 목록에 남김
+                logger.exception("[%s] 서식 복사 실패 (값 기록은 유지됨)", label)
+                human_check.append(f"[서식 복사 실패] {label}: 값은 기록됨, 신규 행 서식·드롭다운 수동 확인 필요 (필터 상태 확인)")
             logger.info("[%s] 시트 기록 완료", label)
-            append_auto_log(bq_client, course_id, semester, written)
+            try:
+                append_auto_log(bq_client, course_id, semester, written)
+            except Exception:
+                # 시트 기록은 끝났으므로 로그 적재 실패만 확인 목록에 남김
+                logger.exception("[%s] 자동 로그 적재 실패", label)
+                human_check.append(f"[로그 적재 실패] {label}: 시트 기록은 완료, BigQuery 자동 로그 적재 실패 (확인 필요)")
 
     # 이관 인원 확인: 명단 기간과 무관하게 모든 과정·기수 시트를 훑어 매일 메일에 포함
     for course_id, course in COURSES.items():
