@@ -541,20 +541,22 @@ def can_write_ga(current, value, field, refresh, last_auto):
     return last_auto is not None and current == last_auto
 
 
-def read_sheet_values_with_retry(gs_client, cohort, attempts=4):
+def read_sheet_values_with_retry(gs_client, cohort, attempts=4, sheet_name=None):
     """시트 전체 값을 읽습니다. 분당 읽기 한도(429) 초과 시 대기 후 다시 시도합니다.
 
     Args:
         gs_client: gspread 클라이언트
         cohort: COURSES의 기수 설정 dict (sheet_id, sheet_name 포함)
         attempts: 최대 시도 횟수
+        sheet_name: 읽을 탭 이름 (None이면 cohort의 기본 탭)
 
     Returns:
         시트 값 2차원 리스트. 모든 시도가 실패하면 마지막 예외를 다시 던집니다.
     """
+    tab = sheet_name or cohort["sheet_name"]
     for attempt in range(1, attempts + 1):
         try:
-            return gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"]).get_all_values()
+            return gs_client.open_by_key(cohort["sheet_id"]).worksheet(tab).get_all_values()
         except gspread.exceptions.APIError as error:
             if "429" not in str(error) or attempt == attempts:
                 raise
@@ -597,6 +599,129 @@ def find_transfer_candidates(sheet_values, header_row):
             continue
         found.append({"name": name, "apply_date": date, "row": row_no})
     return found
+
+
+# 사업팀 검토 시트(2.3)의 탭 이름. 서류·인터뷰 단계 이관 여부를 사업팀이 직접 기록하는 곳입니다 (수정 금지 탭, 읽기만 함)
+REVIEW_TAB = "2.3 사업팀 시트(수정 금지)"
+REVIEW_HEADER_SEARCH_ROWS = 10  # 2.3 탭 헤더 행을 찾을 상단 행 수
+
+
+def find_review_transfers(review_values):
+    """2.3 사업팀 시트에서 이관된 신청자의 (이름, 신청일) 목록을 찾습니다.
+
+    '이관'으로 보는 기준은 서류/인터뷰 '사유' 칸에 '이관'이 적혀 있거나 '이관여부' 칸이 'O'인 경우입니다.
+    날짜 범위와 무관하게 시트 전체를 봅니다.
+
+    Args:
+        review_values: 2.3 탭 get_all_values() 결과 (2차원 리스트)
+
+    Returns:
+        [{"name", "apply_date"}] 목록. 헤더를 찾지 못하면 빈 목록을 반환합니다.
+    """
+    header_idx = None
+    for idx, row in enumerate(review_values[:REVIEW_HEADER_SEARCH_ROWS]):
+        names = [h.strip() for h in row]
+        if "이름" in names and "일자" in names:
+            header_idx = idx
+            break
+    if header_idx is None:
+        return []
+
+    headers = [h.strip() for h in review_values[header_idx]]
+    name_col = headers.index("이름")
+    date_col = headers.index("일자")
+    reason_cols = [i for i, h in enumerate(headers) if h == "사유"]
+    flag_cols = [i for i, h in enumerate(headers) if h == "이관여부"]
+
+    found = []
+    seen = set()
+    for row in review_values[header_idx + 1:]:
+        name = cell(row, name_col)
+        # 일자 칸은 '2026.10.18 07:08' 형식이므로 날짜 부분만 잘라 변환합니다
+        date = parse_date(cell(row, date_col)[:10].replace(".", "-"))
+        if not name or not date:
+            continue
+        is_transfer = any(cell(row, c) == TRANSFER_REASON for c in reason_cols) \
+            or any(cell(row, c) == "O" for c in flag_cols)
+        if not is_transfer or (name, date) in seen:
+            continue
+        seen.add((name, date))
+        found.append({"name": name, "apply_date": date})
+    return found
+
+
+def build_review_transfer_updates(sheet_values, header_row, review_transfers, only_names=None):
+    """2.3에서 이관된 신청자를 2.2 시트에 반영할 셀 업데이트를 만듭니다.
+
+    - 2.2에 같은 (이름, 일자) 행이 있으면 사유 칸이 비어 있을 때만 '이관'을 씁니다.
+      이미 다른 사유(탈락 등)가 적혀 있으면 덮어쓰지 않고 확인 목록에 남깁니다.
+    - 2.2에 행이 없으면 시트 맨 아래에 일자·이름·사유 '이관'으로 행을 추가합니다.
+      PG에 신청 기록이 없는 2.3 전용 이관 건이 대상입니다. 나머지 칸은 비워 두고 확인 목록에 남깁니다.
+    날짜 범위 제한 없이 모든 이관 건을 대상으로 합니다.
+
+    Args:
+        sheet_values: 2.2 탭 get_all_values() 결과 (2차원 리스트)
+        header_row: 2.2 헤더 행 번호 (1-based)
+        review_transfers: find_review_transfers 결과 목록
+        only_names: 이 이름들만 처리 (None이면 전체)
+
+    Returns:
+        (updates, notes, marked, format_src, appended_rows): batch_update용 dict 목록, 확인 목록 문구 목록,
+        이관으로 표시·추가할 항목 목록 [{"name", "apply_date", "row", "appended"}],
+        서식을 복사할 기존 마지막 행 번호, 새로 추가한 행 번호 목록
+    """
+    header_row = find_header_row(sheet_values, header_row)
+    headers = [h.strip() for h in sheet_values[header_row - 1]]
+    needed = {key: TARGET_HEADERS[key] for key in ("date", "name", "reason")}
+    if any(title not in headers for title in needed.values()):
+        return [], [], [], None, []
+    col_index = {key: headers.index(title) for key, title in needed.items()}
+
+    # (이름, 날짜) → 2.2 시트 행 번호 목록
+    sheet_index = defaultdict(list)
+    for row_no, row in enumerate(sheet_values[header_row:], start=header_row + 1):
+        name = cell(row, col_index["name"])
+        date = parse_date(cell(row, col_index["date"]))
+        if name and date:
+            sheet_index[(name, date)].append(row_no)
+
+    # 행 추가 위치: 기존 데이터 마지막 행 다음
+    format_src = last_data_row(sheet_values, header_row, col_index)
+    next_row = format_src + 1
+    date_sep = date_separator_of(sheet_values, header_row, col_index)
+    appended_rows = []
+    appended = set()
+
+    updates, notes, marked = [], [], []
+    for item in review_transfers:
+        name, date = item["name"], item["apply_date"]
+        if only_names and name not in only_names:
+            continue
+        row_nos = sheet_index.get((name, date), [])
+        if not row_nos:
+            if (name, date) in appended:
+                continue
+            appended.add((name, date))
+            new_values = {"date": format_date(date, date_sep), "name": name, "reason": TRANSFER_REASON}
+            for key, value in new_values.items():
+                updates.append({"range": rowcol_to_a1(next_row, col_index[key] + 1), "values": [[value]]})
+            appended_rows.append(next_row)
+            marked.append({"name": name, "apply_date": date, "row": next_row, "appended": True})
+            next_row += 1
+            continue
+        if len(row_nos) != 1:
+            notes.append(f"[이관 반영 확인] 2.3 이관 {name} {date}: 2.2 시트 매칭 {len(row_nos)}건 - 수동 확인 필요")
+            continue
+        row_no = row_nos[0]
+        reason = cell(sheet_values[row_no - 1], col_index["reason"])
+        if reason == TRANSFER_REASON:
+            continue
+        if reason:
+            notes.append(f"[사유 충돌] 2.3 이관 {name} {date}: 2.2 {row_no}행 사유 '{reason}' 유지 (이관 표시 안 함 - 확인 필요)")
+            continue
+        updates.append({"range": rowcol_to_a1(row_no, col_index["reason"] + 1), "values": [[TRANSFER_REASON]]})
+        marked.append({"name": name, "apply_date": date, "row": row_no, "appended": False})
+    return updates, notes, marked, format_src, appended_rows
 
 
 def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(), auto_log=None, course_id=None,
@@ -667,6 +792,11 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
                 and COURSES[course_id]["type"] == "employed":
             # 모두연 홈페이지 유입은 재직자 과정에서만 '모두연 홈페이지', 나머지 과정은 '모두연 배너'
             channel = "모두연 홈페이지"
+        material = None
+        if (match["session_source"], match["session_medium"]) == ("twitter", "board_all") and course_id == "ai_data_intel":
+            # 데이터 인텔리전스의 X(트위터) 게시물 유입은 '기타(유가)' 채널, 소재 및 키워드는 'X(dandan)'으로 기록
+            channel = "기타(유가)"
+            material = "X(dandan)"
         if channel == "직접 지원" and is_meta_ad(match):
             # GA가 출처를 놓쳤지만 메타 광고 흔적이 있으면 메타로 분류
             channel = "메타"
@@ -680,7 +810,7 @@ def build_updates(sheet_values, header_row, matched_rows, skip_fields=frozenset(
             note = f"{COURSES[origin]['name']} 캠페인으로 유입"
         values = {
             "channel": channel or "",
-            "material": material_for(channel, match),
+            "material": material or material_for(channel, match),
             "campaign": campaign_for(channel, match),
             "age": age_group_of(match.get("applicant_birth"), date),
             "note": note,
@@ -1109,6 +1239,51 @@ def main():
                     f"[이관 인원] {label} {item['row']}행 {item['apply_date']} {item['name']}: "
                     f"사유 '{TRANSFER_REASON}', 이관 과정 미기재 - 시트 '{TRANSFER_COURSE_HEADERS[0]}' 열 확인·기록 필요"
                 )
+
+            # 사업팀 검토 시트(2.3)의 이관을 2.2 사유 칸에 반영 (명단 기간과 무관하게 전체 대상)
+            try:
+                review_values = read_sheet_values_with_retry(gs_client, cohort, sheet_name=REVIEW_TAB)
+            except gspread.exceptions.WorksheetNotFound:
+                logger.warning("[%s] '%s' 탭이 없어 사업팀 이관 반영을 건너뜁니다", label, REVIEW_TAB)
+                continue
+            except Exception:
+                logger.exception("[%s] 사업팀 시트 읽기 실패", label)
+                human_check.append(f"[이관 반영 확인 실패] {label}: 사업팀 시트 읽기 실패로 2.2 사유 반영을 확인하지 못했습니다")
+                continue
+            review_transfers = find_review_transfers(review_values)
+            updates, notes, marked, format_src, appended_rows = build_review_transfer_updates(
+                values, cohort["header_row"], review_transfers, only_names)
+            human_check.extend(notes)
+            if args.apply and updates:
+                try:
+                    worksheet = gs_client.open_by_key(cohort["sheet_id"]).worksheet(cohort["sheet_name"])
+                    worksheet.batch_update(updates, value_input_option="RAW")
+                except Exception:
+                    logger.exception("[%s] 사업팀 이관 반영 기록 실패", label)
+                    human_check.append(f"[기록 실패] {label}: 사업팀 이관 반영 기록에 실패했습니다 (로그 확인 후 재실행 필요)")
+                    continue
+                if appended_rows:
+                    try:
+                        copy_row_formats(worksheet, format_src, appended_rows)
+                    except Exception:
+                        logger.exception("[%s] 이관 추가 행 서식 복사 실패", label)
+                        human_check.append(f"[서식 복사 실패] {label}: 이관 추가 행의 서식·드롭다운 수동 확인 필요 (값은 기록됨)")
+            for item in marked:
+                state = "기록" if args.apply else "기록 예정(드라이런)"
+                if item["appended"]:
+                    human_check.append(
+                        f"[이관 행 추가] {label} {item['row']}행 {item['apply_date']} {item['name']}: "
+                        f"2.2에 없던 2.3 이관 건을 행으로 {state} (유입 정보·연령대 미기재 - 필요 시 보정)"
+                    )
+                    continue
+                human_check.append(
+                    f"[이관 반영] {label} {item['row']}행 {item['apply_date']} {item['name']}: "
+                    f"사업팀 시트 이관을 2.2 사유 '{TRANSFER_REASON}'로 {state}, "
+                    f"시트 '{TRANSFER_COURSE_HEADERS[0]}' 열 이관 과정 기록 필요"
+                )
+            if marked:
+                logger.info("[%s] 사업팀 이관 %d건 처리 (행 추가 %d건) %s",
+                            label, len(marked), len(appended_rows), "기록" if args.apply else "기록 예정")
 
     HUMAN_CHECK_PATH.parent.mkdir(parents=True, exist_ok=True)
     text = "\n".join(human_check) if human_check else "확인 필요 항목 없음"

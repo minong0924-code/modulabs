@@ -144,5 +144,77 @@ class BirthCheckTest(unittest.TestCase):
         self.assertTrue(s.needs_birth_check("private_ai", 1, "임현우", None))
 
 
+class ReviewTransferTest(unittest.TestCase):
+    """2.3 사업팀 시트의 이관을 2.2 사유 칸에 반영하는 로직 테스트"""
+
+    REVIEW_HEADERS = ["", "일자", "이름", "나이", "지원자 현황", "지원서 제출 주간", "지원서 처리 주간", "서류 합격",
+                      "사유", "이관여부", "부재횟수", "인터뷰 합격", "사유", "이관여부"]
+
+    def _review(self, *rows):
+        """2.3 탭 형태(헤더 2행 + 데이터)의 값을 만듭니다. rows: (이름, 일자, 인터뷰 사유, 이관여부)"""
+        body = []
+        for name, date, reason, flag in rows:
+            row = [""] * len(self.REVIEW_HEADERS)
+            row[1] = date
+            row[2] = name
+            row[12] = reason
+            row[13] = flag
+            body.append(row)
+        return [["", "어드민"], self.REVIEW_HEADERS] + body
+
+    def test_finds_transfer_by_interview_reason(self):
+        """인터뷰 사유 칸에 '이관'이 있으면 이관으로 찾고 날짜 시·분은 버린다"""
+        review = self._review(("최낙영", "2026.10.18 07:08", "이관", "O"))
+        self.assertEqual(s.find_review_transfers(review),
+                         [{"name": "최낙영", "apply_date": dt.date(2026, 10, 18)}])
+
+    def test_ignores_non_transfer_rows(self):
+        """이관 표시가 없는 행은 찾지 않는다"""
+        review = self._review(("홍길동", "2026.10.18 07:08", "미참석", ""))
+        self.assertEqual(s.find_review_transfers(review), [])
+
+    def test_missing_header_returns_empty(self):
+        """헤더를 찾지 못하면 빈 목록을 돌려준다"""
+        self.assertEqual(s.find_review_transfers([["아무거나"]]), [])
+
+    def test_marks_empty_reason_before_check_range(self):
+        """2.2 사유가 비어 있으면 신청일이 명단 기간 이전이어도 '이관'으로 표시한다"""
+        sheet = _sheet(("최낙영", "2026-10-18", ""))
+        transfers = [{"name": "최낙영", "apply_date": dt.date(2026, 10, 18)}]
+        updates, notes, marked, _fmt, _added = s.build_review_transfer_updates(sheet, 1, transfers)
+        self.assertEqual(updates, [{"range": "I2", "values": [[s.TRANSFER_REASON]]}])
+        self.assertEqual(marked[0]["row"], 2)
+        self.assertEqual(notes, [])
+
+    def test_does_not_overwrite_existing_reason(self):
+        """2.2 사유에 탈락 등 다른 사유가 있으면 덮어쓰지 않고 확인 목록에 남긴다"""
+        sheet = _sheet(("최낙영", "2026-10-18", "단순변심"))
+        transfers = [{"name": "최낙영", "apply_date": dt.date(2026, 10, 18)}]
+        updates, notes, marked, _fmt, _added = s.build_review_transfer_updates(sheet, 1, transfers)
+        self.assertEqual(updates, [])
+        self.assertEqual(marked, [])
+        self.assertTrue(any("사유 충돌" in n for n in notes))
+
+    def test_appends_row_when_missing_in_2_2(self):
+        """2.2에 행이 없으면 시트 맨 아래(마지막 데이터 다음 행)에 일자·이름·사유 '이관' 행을 추가한다"""
+        sheet = _sheet(("다른사람", "2026-10-18", ""))
+        transfers = [{"name": "최낙영", "apply_date": dt.date(2026, 10, 18)}]
+        updates, notes, marked, format_src, appended_rows = s.build_review_transfer_updates(sheet, 1, transfers)
+        self.assertEqual(appended_rows, [3])
+        self.assertEqual(format_src, 2)
+        self.assertTrue(marked[0]["appended"])
+        values = {u["range"]: u["values"][0][0] for u in updates}
+        self.assertEqual(values, {"B3": "2026-10-18", "C3": "최낙영", "I3": s.TRANSFER_REASON})
+
+    def test_appends_once_per_person(self):
+        """같은 이름·일자가 2.3에 중복되어도 2.2 행은 한 번만 추가한다"""
+        sheet = _sheet()
+        transfers = [{"name": "최낙영", "apply_date": dt.date(2026, 10, 18)},
+                     {"name": "최낙영", "apply_date": dt.date(2026, 10, 18)}]
+        _u, _n, marked, _f, appended_rows = s.build_review_transfer_updates(sheet, 1, transfers)
+        self.assertEqual(appended_rows, [2])
+        self.assertEqual(len(marked), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
